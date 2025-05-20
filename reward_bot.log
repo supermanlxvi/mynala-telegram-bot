@@ -1,0 +1,9 @@
+2025-05-19 20:34:09,186 - INFO - Ping received from 6943751419
+2025-05-20 10:47:04,139 - ERROR - Error in /register command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 9080 and this is thread id 5860.
+2025-05-20 10:47:59,176 - ERROR - Error in /register command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 9080 and this is thread id 640.
+2025-05-20 10:48:23,552 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 9080 and this is thread id 640.
+2025-05-20 10:57:05,784 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 21240 and this is thread id 16280.
+2025-05-20 11:19:55,975 - INFO - Initiating weekly leaderboard reset.
+2025-05-20 11:20:18,165 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 12408 and this is thread id 24004.
+2025-05-20 11:36:58,962 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 18788 and this is thread id 1828.
+2025-05-20 11:45:02,701 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 24564 and this is thread id 24296.
