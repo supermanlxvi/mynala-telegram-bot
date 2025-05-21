@@ -1,1 +1,2 @@
-worker: python MyNala_Telegram_Reward_Bot.py
+python MyNala_Telegram_Reward_Bot.py
+

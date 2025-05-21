@@ -1,2 +1,4 @@
-!rewards.db
 .env
+__pycache__/
+reward_bot.log
+rewards.db
