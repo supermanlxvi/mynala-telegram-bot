@@ -7,3 +7,19 @@
 2025-05-20 11:20:18,165 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 12408 and this is thread id 24004.
 2025-05-20 11:36:58,962 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 18788 and this is thread id 1828.
 2025-05-20 11:45:02,701 - ERROR - Error in /volume command: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 24564 and this is thread id 24296.
+2025-05-20 14:36:54,255 - ERROR - Error in /status: no such column: verified
+2025-05-20 16:21:09,391 - INFO - Starting periodic tasks threads.
+2025-05-20 16:21:09,391 - INFO - Running daily streak reminders.
+2025-05-20 16:21:09,393 - ERROR - Error in scheduled task 'send_streak_reminders': no such column: chat_id
+2025-05-20 16:22:19,223 - ERROR - Error in /status for chat_id 6943751419: no such column: verified
+2025-05-20 16:36:50,307 - INFO - Starting periodic tasks threads.
+2025-05-20 16:36:50,308 - INFO - Running daily streak reminders.
+2025-05-20 16:38:24,624 - INFO - Attempting to verify transaction for wallet testWallet123 for chat_id 6943751419.
+2025-05-20 16:38:24,624 - ERROR - Transaction check error for testWallet123: 'Client' object has no attribute 'get_confirmed_signatures_for_address2'
+2025-05-20 16:38:24,884 - WARNING - Verification failed for wallet testWallet123 for chat_id 6943751419.
+2025-05-20 19:37:09,067 - INFO - Wallet verified for chat_id 6943751419: FF9n3VYMhD9XaP19wFsrn1k8KnL67jvuYQfeaaMzANRL
+2025-05-20 20:17:18,785 - INFO - Wallet verified for chat_id 6943751419: FF9n3VYMhD9XaP19wFsrn1k8KnL67jvuYQfeaaMzANRL
+2025-05-20 20:34:01,760 - INFO - Wallet verified for chat_id 6943751419: FF9n3VYMhD9XaP19wFsrn1k8KnL67jvuYQfeaaMzANRL
+2025-05-20 20:39:28,841 - INFO - Wallet verified for chat_id 6943751419: FF9n3VYMhD9XaP19wFsrn1k8KnL67jvuYQfeaaMzANRL
+2025-05-20 21:25:10,189 - INFO - Wallet verified for chat_id 6943751419: FF9n3VYMhD9XaP19wFsrn1k8KnL67jvuYQfeaaMzANRL
+2025-05-20 21:35:22,503 - INFO - Wallet verified for chat_id 6943751419: FF9n3VYMhD9XaP19wFsrn1k8KnL67jvuYQfeaaMzANRL

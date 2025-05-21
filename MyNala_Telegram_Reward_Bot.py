@@ -6,23 +6,34 @@ from datetime import datetime, timedelta
 from telebot import TeleBot
 from solana.rpc.api import Client
 import threading
+from dotenv import load_dotenv
 
-# === Config ===
-TELEGRAM_BOT_TOKEN = "8059034423:AAF54h8vbJJiZatEDWW7Ig257Fnd8-vnWM0"
-SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+# --- Load environment variables from .env ---
+load_dotenv()
+
+# --- Configuration ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL")
 DB_FILE = "rewards.db"
 LOG_FILE = "reward_bot.log"
 
-# === Setup ===
+# --- Logging Setup ---
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# --- Global Instances (initialized once) ---
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
 solana_client = Client(SOLANA_RPC_URL)
+
+# --- Database Setup ---
+db_lock = threading.Lock()
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS users (
-    wallet TEXT PRIMARY KEY,
+    chat_id INTEGER PRIMARY KEY,
+    verified INTEGER DEFAULT 0,
+    wallet TEXT UNIQUE,
     streak_days INTEGER DEFAULT 0,
     last_purchase TEXT DEFAULT NULL,
     total_volume INTEGER DEFAULT 0,
@@ -33,120 +44,161 @@ CREATE TABLE IF NOT EXISTS users (
 ''')
 conn.commit()
 
-# === Rewards ===
+# --- Reward Constants ---
 BUY_STREAK_REWARDS = {3: 50000, 5: 100000, 7: 200000, 14: 500000, 30: 1000000}
-VOLUME_MILESTONES = {500: 250000, 1000: 500000, 2000: 1000000}
 LEADERBOARD_REWARDS = {1: 2000000, 2: 1000000, 3: 500000}
 REFERRAL_BONUS_CAP = 500000
-LEADERBOARD_RESET_INTERVAL = 7  # Days
+LEADERBOARD_RESET_INTERVAL_HOURS = 24 * 7
 
-# === Helper Functions ===
+# --- Solana Transaction Verification ---
 def verify_transaction(wallet, amount):
     try:
-        response = solana_client.get_confirmed_signature_for_address2(wallet, limit=100)
-        for tx in response['result']:
-            if tx.get('err') is None and tx.get('memo') and int(tx.get('memo')) >= amount:
-                return True
+        response = solana_client.get_confirmed_signatures_for_address2(wallet, limit=100)
+        if response and 'result' in response:
+            for tx in response['result']:
+                if tx.get('err') is None and tx.get('memo') and int(tx.get('memo')) >= amount:
+                    logging.info(f"Transaction verified for wallet {wallet} with memo amount {tx.get('memo')}.")
+                    return True
+        return False
     except Exception as e:
         logging.error(f"Transaction check error for {wallet}: {e}")
-    return False
+        return False
 
-def update_user(wallet, volume):
-    now = datetime.utcnow()
-    cursor.execute("SELECT streak_days, last_purchase, total_volume, referred_by, total_rewards FROM users WHERE wallet=?", (wallet,))
-    result = cursor.fetchone()
+# --- Leaderboard Handler ---
+@bot.message_handler(commands=['leaderboard'])
+def leaderboard(message):
+    with db_lock:
+        cursor.execute("SELECT wallet, total_volume FROM users WHERE verified = 1 ORDER BY total_volume DESC LIMIT 5")
+        top = cursor.fetchall()
 
-    if result is None:
-        cursor.execute("INSERT INTO users (wallet, streak_days, last_purchase, total_volume) VALUES (?, ?, ?, ?)", (wallet, 1, now.strftime("%Y-%m-%d"), volume))
-        conn.commit()
-        return f"New user registered with 1 day buy streak and {volume} volume."
+    if not top:
+        bot.reply_to(message, "No leaderboard data available yet.")
+        return
 
-    streak_days, last_purchase, total_volume, referred_by, total_rewards = result
-    last_purchase_date = datetime.strptime(last_purchase, "%Y-%m-%d")
-    streak_days = streak_days + 1 if (now - last_purchase_date).days == 1 else 1
-    total_volume += volume
+    response = "\U0001F3C6 Leaderboard:\n"
+    for i, (wallet, volume) in enumerate(top, 1):
+        response += f"{i}. `{wallet[:6]}...{wallet[-4:]}` - {volume} $MN\n"
 
-    cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=? WHERE wallet=?", (streak_days, now.strftime("%Y-%m-%d"), total_volume, wallet))
-    conn.commit()
+    bot.reply_to(message, response, parse_mode='Markdown')
 
-    reward = BUY_STREAK_REWARDS.get(streak_days, 0)
-    message = f"User streak updated to {streak_days} days with {total_volume} total volume."
-    if reward > 0:
-        cursor.execute("UPDATE users SET total_rewards = total_rewards + ? WHERE wallet = ?", (reward, wallet))
-        conn.commit()
-        message = f"Congrats! {wallet} hit a {streak_days} day streak and earned {reward} $MN!"
-        if referred_by:
-            referral_bonus = min(int(reward * 0.05), REFERRAL_BONUS_CAP)
-            cursor.execute("UPDATE users SET total_rewards = total_rewards + ? WHERE wallet = ?", (referral_bonus, referred_by))
-            conn.commit()
-            message += f" Referrer {referred_by} earned {referral_bonus} $MN."
-    return message
+# --- Command Handlers ---
+@bot.message_handler(commands=['verify'])
+def verify_wallet(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /verify <wallet_address>")
+        return
 
-def reset_leaderboard():
-    while True:
-        time.sleep(LEADERBOARD_RESET_INTERVAL * 86400)
-        cursor.execute("SELECT wallet, total_volume FROM users ORDER BY total_volume DESC LIMIT 3")
-        winners = cursor.fetchall()
-        for rank, (wallet, _) in enumerate(winners, 1):
-            reward = LEADERBOARD_REWARDS.get(rank, 0)
-            cursor.execute("UPDATE users SET total_rewards = total_rewards + ? WHERE wallet = ?", (reward, wallet))
-            conn.commit()
-            try:
-                bot.send_message(wallet, f"🎉 Congrats! You placed #{rank} on the leaderboard and earned {reward} $MN!")
-            except Exception as e:
-                logging.warning(f"Unable to notify wallet {wallet}: {e}")
-        cursor.execute("UPDATE users SET total_volume = 0")
-        conn.commit()
+    wallet = parts[1]
+    chat_id = message.chat.id
 
-# Start leaderboard reset thread
-threading.Thread(target=reset_leaderboard, daemon=True).start()
-
-# === Bot Commands ===
-@bot.message_handler(commands=['register'])
-def register_user(message):
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /register <wallet> [referrer_wallet]")
-            return
-        wallet = parts[1]
-        referred_by = parts[2] if len(parts) > 2 else None
+    with db_lock:
         cursor.execute("SELECT * FROM users WHERE wallet=?", (wallet,))
-        if cursor.fetchone():
-            bot.reply_to(message, "This wallet is already registered.")
-            return
-        cursor.execute("INSERT INTO users (wallet, streak_days, last_purchase, total_volume, referred_by) VALUES (?, ?, ?, ?, ?)",
-                       (wallet, 1, datetime.utcnow().strftime("%Y-%m-%d"), 0, referred_by))
-        conn.commit()
-        bot.reply_to(message, f"✅ {wallet} registered.")
-        if referred_by:
-            cursor.execute("SELECT * FROM users WHERE wallet=?", (referred_by,))
-            if cursor.fetchone():
-                cursor.execute("UPDATE users SET referral_count = referral_count + 1 WHERE wallet = ?", (referred_by,))
-                conn.commit()
-                bot.send_message(message.chat.id, f"You were referred by {referred_by}. They received a bonus!")
-    except Exception as e:
-        logging.error(f"Error in /register: {e}")
-        bot.reply_to(message, "❌ Error while registering wallet.")
-
-@bot.message_handler(commands=['volume'])
-def check_volume(message):
-    try:
-        parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "Usage: /volume <wallet_address>")
-            return
-        wallet = parts[1]
-        cursor.execute("SELECT total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
         result = cursor.fetchone()
         if result:
-            total_volume, total_rewards = result
-            bot.reply_to(message, f"Total volume for {wallet}: {total_volume} $MN\nTotal rewards: {total_rewards} $MN")
+            cursor.execute("UPDATE users SET verified=1 WHERE wallet=?", (wallet,))
         else:
-            bot.reply_to(message, "Wallet not found. Use /register first.")
-    except Exception as e:
-        logging.error(f"Error in /volume: {e}")
-        bot.reply_to(message, "❌ Error while checking volume.")
+            now = datetime.utcnow().strftime("%Y-%m-%d")
+            cursor.execute("INSERT INTO users (chat_id, wallet, verified, last_purchase) VALUES (?, ?, ?, ?)", (chat_id, wallet, 1, now))
+        conn.commit()
+    bot.reply_to(message, f"✅ Wallet {wallet} is now verified.")
 
-print("✅ MyNala Bot is running...")
-bot.polling()
+@bot.message_handler(commands=['status'])
+def check_status(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /status <wallet_address>")
+        return
+
+    wallet = parts[1]
+    with db_lock:
+        cursor.execute("SELECT verified, streak_days, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+
+    if result:
+        verified, streak, volume, rewards = result
+        status = "✅ Verified" if verified else "❌ Not Verified"
+        bot.reply_to(message, f"📊 Status for `{wallet[:6]}...{wallet[-4:]}`:\n{status}\n📈 Volume: {volume} $MN\n🔥 Streak: {streak} days\n💰 Rewards: {rewards} $MN", parse_mode='Markdown')
+    else:
+        bot.reply_to(message, "Wallet not found. Please verify first.")
+
+@bot.message_handler(commands=['referrals'])
+def check_referrals(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /referrals <wallet_address>")
+        return
+
+    wallet = parts[1]
+    with db_lock:
+        cursor.execute("SELECT referral_count FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+
+    if result:
+        bot.reply_to(message, f"📣 Wallet {wallet} has {result[0]} referral(s).")
+    else:
+        bot.reply_to(message, "Wallet not found.")
+
+@bot.message_handler(commands=['claim'])
+def claim_rewards(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /claim <wallet_address>")
+        return
+
+    wallet = parts[1]
+    with db_lock:
+        cursor.execute("SELECT total_rewards FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+
+    if result:
+        bot.reply_to(message, f"💰 Wallet {wallet} has {result[0]} $MN in rewards.")
+    else:
+        bot.reply_to(message, "Wallet not found.")
+
+@bot.message_handler(commands=['buy'])
+def buy_tokens(message):
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
+        return
+
+    wallet = parts[1]
+    try:
+        amount = int(parts[2])
+    except ValueError:
+        bot.reply_to(message, "Amount must be an integer.")
+        return
+
+    chat_id = message.chat.id
+    now = datetime.utcnow()
+
+    with db_lock:
+        cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+        if result:
+            streak, last_purchase, volume, rewards = result
+            if last_purchase:
+                last_date = datetime.strptime(last_purchase, "%Y-%m-%d")
+                if (now - last_date).days == 1:
+                    streak += 1
+                else:
+                    streak = 1
+            else:
+                streak = 1
+
+            volume += amount
+            reward = BUY_STREAK_REWARDS.get(streak, 0)
+            rewards += reward
+
+            cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
+                           (streak, now.strftime("%Y-%m-%d"), volume, rewards, wallet))
+            conn.commit()
+            bot.reply_to(message, f"✅ Buy of {amount} $MN recorded for {wallet}.\n🔥 Streak: {streak} days\n💰 Total Rewards: {rewards} $MN")
+        else:
+            bot.reply_to(message, "Wallet not found. Please verify first.")
+
+# --- Bot Start ---
+if __name__ == "__main__":
+    print("✅ MyNala Bot is running...")
+    bot.polling(none_stop=True)
