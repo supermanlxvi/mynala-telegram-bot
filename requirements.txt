@@ -1,4 +1,3 @@
 pyTelegramBotAPI
-solana
 python-dotenv
-
+solana
