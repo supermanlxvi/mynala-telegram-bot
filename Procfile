@@ -1,3 +1,3 @@
-web: python MyNala_Telegram_Reward_Bot.py
+web: python3 MyNala_Telegram_Reward_Bot.py
 
 
