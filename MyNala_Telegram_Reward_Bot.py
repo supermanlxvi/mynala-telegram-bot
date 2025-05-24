@@ -174,7 +174,7 @@ def buy_tokens(message):
             streak, last_purchase, volume, rewards = result
             if last_purchase:
                 last_date = datetime.strptime(last_purchase, "%Y-%m-%d")
-                if (now - last_date).days == 1:
+                if (now.date() - last_date.date()).days == 1:
                     streak += 1
                 else:
                     streak = 1
