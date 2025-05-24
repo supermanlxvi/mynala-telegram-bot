@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 import time
@@ -19,23 +20,23 @@ LOG_FILE = "reward_bot.log"
 # --- Logging Setup ---
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Global Instances ---
-bot = TeleBot(TELEGRAM_BOT_TOKEN)
-solana_client = Client(SOLANA_RPC_URL)
-
 # --- Flask App for Webhook ---
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def index():
-    return "✅ MyNala Bot is running (root)", 200
+    return "✅ MyNala Bot is running", 200
 
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_string = request.get_data().decode("utf-8")
     update = types.Update.de_json(json_string)
     bot.process_new_updates([update])
-    return "!", 200
+    return "OK", 200
+
+# --- Global Instances ---
+bot = TeleBot(TELEGRAM_BOT_TOKEN)
+solana_client = Client(SOLANA_RPC_URL)
 
 # --- Database Setup ---
 db_lock = threading.Lock()
@@ -194,9 +195,15 @@ def buy_tokens(message):
         else:
             bot.reply_to(message, "Wallet not found. Please verify first.")
 
-# --- Bot Start ---
-if __name__ == "__main__":
+# --- Bot Startup ---
+def start_bot():
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://primary-production-cd3d.up.railway.app/{TELEGRAM_BOT_TOKEN}")
+    time.sleep(1)
+    webhook_url = f"https://primary-production-cd3d.up.railway.app/{TELEGRAM_BOT_TOKEN}"
+    bot.set_webhook(url=webhook_url)
+    logging.info(f"✅ Webhook set to {webhook_url}")
     print("✅ MyNala Bot is live via webhook...")
+
+if __name__ == "__main__":
+    start_bot()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
