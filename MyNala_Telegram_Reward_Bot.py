@@ -9,10 +9,8 @@ import threading
 from dotenv import load_dotenv
 from flask import Flask, request
 
-# --- Load environment variables from .env ---
+# --- Load environment variables from .env FIRST ---
 load_dotenv()
-
-# --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL")
 DB_FILE = "rewards.db"
@@ -21,7 +19,7 @@ LOG_FILE = "reward_bot.log"
 # --- Logging Setup ---
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Global Instances (initialized once) ---
+# --- Global Instances ---
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
 solana_client = Client(SOLANA_RPC_URL)
 
