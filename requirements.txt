@@ -1,4 +1,4 @@
-Flask
-pyTelegramBotAPI
+python-telegram-bot
+flask
 python-dotenv
 solana
