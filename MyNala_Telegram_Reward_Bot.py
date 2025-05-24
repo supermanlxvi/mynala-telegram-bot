@@ -75,7 +75,122 @@ def verify_transaction(wallet, amount):
         logging.error(f"Transaction check error for {wallet}: {e}")
         return False
 
-# [Handlers remain unchanged from earlier content, not shown here for brevity]
+# --- Command Handlers ---
+@bot.message_handler(commands=['verify'])
+def verify_wallet(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /verify <wallet_address>")
+        return
+
+    wallet = parts[1]
+    chat_id = message.chat.id
+
+    with db_lock:
+        cursor.execute("SELECT * FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+        if result:
+            cursor.execute("UPDATE users SET verified=1 WHERE wallet=?", (wallet,))
+        else:
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            cursor.execute("INSERT INTO users (chat_id, wallet, verified, last_purchase) VALUES (?, ?, ?, ?)", (chat_id, wallet, 1, now))
+        conn.commit()
+    bot.reply_to(message, f"✅ Wallet {wallet} is now verified.")
+
+@bot.message_handler(commands=['status'])
+def check_status(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /status <wallet_address>")
+        return
+
+    wallet = parts[1]
+    with db_lock:
+        cursor.execute("SELECT verified, streak_days, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+
+    if result:
+        verified, streak, volume, rewards = result
+        status = "✅ Verified" if verified else "❌ Not Verified"
+        bot.reply_to(message, f"📊 Status for `{wallet[:6]}...{wallet[-4:]}`:\n{status}\n📈 Volume: {volume} $MN\n🔥 Streak: {streak} days\n💰 Rewards: {rewards} $MN", parse_mode='Markdown')
+    else:
+        bot.reply_to(message, "Wallet not found. Please verify first.")
+
+@bot.message_handler(commands=['claim'])
+def claim_rewards(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /claim <wallet_address>")
+        return
+
+    wallet = parts[1]
+    with db_lock:
+        cursor.execute("SELECT total_rewards FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+
+    if result:
+        bot.reply_to(message, f"💰 Wallet {wallet} has {result[0]} $MN in rewards.")
+    else:
+        bot.reply_to(message, "Wallet not found.")
+
+@bot.message_handler(commands=['referrals'])
+def check_referrals(message):
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /referrals <wallet_address>")
+        return
+
+    wallet = parts[1]
+    with db_lock:
+        cursor.execute("SELECT referral_count FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+
+    if result:
+        bot.reply_to(message, f"📣 Wallet {wallet} has {result[0]} referral(s).")
+    else:
+        bot.reply_to(message, "Wallet not found.")
+
+@bot.message_handler(commands=['buy'])
+def buy_tokens(message):
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
+        return
+
+    wallet = parts[1]
+    try:
+        amount = int(parts[2])
+    except ValueError:
+        bot.reply_to(message, "Amount must be an integer.")
+        return
+
+    chat_id = message.chat.id
+    now = datetime.now(timezone.utc)
+
+    with db_lock:
+        cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+        result = cursor.fetchone()
+        if result:
+            streak, last_purchase, volume, rewards = result
+            if last_purchase:
+                last_date = datetime.strptime(last_purchase, "%Y-%m-%d")
+                if (now - last_date).days == 1:
+                    streak += 1
+                else:
+                    streak = 1
+            else:
+                streak = 1
+
+            volume += amount
+            reward = BUY_STREAK_REWARDS.get(streak, 0)
+            rewards += reward
+
+            cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
+                           (streak, now.strftime("%Y-%m-%d"), volume, rewards, wallet))
+            conn.commit()
+            bot.reply_to(message, f"✅ Buy of {amount} $MN recorded for {wallet}.\n🔥 Streak: {streak} days\n💰 Total Rewards: {rewards} $MN")
+        else:
+            bot.reply_to(message, "Wallet not found. Please verify first.")
 
 # --- Bot Start ---
 if __name__ == "__main__":
