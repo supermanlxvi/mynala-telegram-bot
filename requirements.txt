@@ -1,5 +1,4 @@
-python-telegram-bot
-python-dotenv
-solana
+Flask==2.3.2
 pyTelegramBotAPI==4.12.0
-flask
+python-dotenv==1.0.1
+solana==0.29.0
