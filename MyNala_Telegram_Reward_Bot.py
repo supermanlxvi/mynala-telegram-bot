@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import time
@@ -29,6 +28,7 @@ def index():
 
 @app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def webhook():
+    logging.info("✅ Received Telegram webhook POST")
     json_string = request.get_data().decode("utf-8")
     update = types.Update.de_json(json_string)
     bot.process_new_updates([update])
