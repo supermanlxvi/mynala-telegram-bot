@@ -30,12 +30,20 @@ def index():
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def webhook():
-    json_string = request.get_data().decode("utf-8")
-    update = types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return "OK", 200
+@app.route("/webhook/<token>", methods=["POST"])
+def webhook(token):
+    if token != TELEGRAM_BOT_TOKEN:
+        logging.warning("Unauthorized access attempt to webhook")
+        return "Unauthorized", 403
+
+    try:
+        json_string = request.get_data().decode("utf-8")
+        update = types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    except Exception as e:
+        logging.error(f"Error processing webhook: {e}")
+        return str(e), 500
 
 # --- Global Instances ---
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
