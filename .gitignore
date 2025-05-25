@@ -1,4 +1,5 @@
 .env
-__pycache__/
-reward_bot.log
+*.log
+*.sqlite3
 rewards.db
+__pycache__/
