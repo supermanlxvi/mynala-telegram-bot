@@ -1,5 +1,5 @@
+# .gitignore
 .env
+*.db
 *.log
-*.sqlite3
-rewards.db
 __pycache__/
