@@ -7,7 +7,7 @@ from telebot import TeleBot, types
 from solana.rpc.api import Client
 import threading
 from dotenv import load_dotenv
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 # --- Load environment variables from .env FIRST ---
 load_dotenv()
@@ -26,9 +26,12 @@ app = Flask(__name__)
 def index():
     return "✅ MyNala Bot is running", 200
 
-@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+@app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
 def webhook():
-    logging.info("✅ Received Telegram webhook POST")
     json_string = request.get_data().decode("utf-8")
     update = types.Update.de_json(json_string)
     bot.process_new_updates([update])
@@ -210,15 +213,23 @@ def buy_tokens(message):
         else:
             bot.reply_to(message, "Wallet not found. Please verify first.")
 
-# --- Bot Startup ---
-def start_bot():
-    bot.remove_webhook()
-    time.sleep(1)
-    webhook_url = f"https://primary-production-cd3d.up.railway.app/{TELEGRAM_BOT_TOKEN}"
-    bot.set_webhook(url=webhook_url)
-    logging.info(f"✅ Webhook set to {webhook_url}")
-    print("✅ MyNala Bot is live via webhook...")
+# --- Webhook Management ---
+def set_webhook():
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "https://primary-production-cd3d.up.railway.app")
+        if not base_url.startswith("http"):
+            base_url = f"https://{base_url}"
+        webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        logging.info(f"✅ Webhook set to {webhook_url}")
+        print("✅ MyNala Bot is live via webhook...")
+    except Exception as e:
+        logging.error(f"❌ Failed to set webhook: {e}")
 
+# --- Bot Startup ---
 if __name__ == "__main__":
-    start_bot()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    set_webhook()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
