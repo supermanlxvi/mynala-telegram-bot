@@ -222,11 +222,13 @@ def set_webhook():
         if not base_url.startswith("http"):
             base_url = f"https://{base_url}"
         webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
-        bot.set_webhook(url=webhook_url)
-        logging.info(f"✅ Webhook set to {webhook_url}")
-        print("✅ MyNala Bot is live via webhook...")
+        result = bot.set_webhook(url=webhook_url)
+        if result:
+            logging.info(f"✅ Webhook set to {webhook_url}")
+        else:
+            logging.error(f"❌ Failed to set webhook to {webhook_url}")
     except Exception as e:
-        logging.error(f"❌ Failed to set webhook: {e}")
+        logging.error(f"❌ Exception in set_webhook: {e}")
 
 # --- Bot Startup ---
 if __name__ == "__main__":
