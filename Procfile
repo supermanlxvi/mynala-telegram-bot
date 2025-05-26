@@ -1,1 +1,1 @@
-web: gunicorn --bind 0.0.0.0:$PORT bot:app
+web: gunicorn --bind 0.0.0.0:$PORT MyNala_Telegram_Reward_Bot:app
