@@ -9,10 +9,22 @@ import threading
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 
-# --- Load environment variables from .env FIRST ---
+# --- Load environment variables --- 
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL")
+
+# --- Validate Required Environment Variables ---
+missing = []
+if not TELEGRAM_BOT_TOKEN:
+    missing.append("TELEGRAM_BOT_TOKEN")
+if not SOLANA_RPC_URL:
+    missing.append("SOLANA_RPC_URL")
+
+if missing:
+    logging.critical(f"❌ Missing environment variables: {', '.join(missing)}")
+    exit(1)
+
 DB_FILE = "rewards.db"
 LOG_FILE = "reward_bot.log"
 
@@ -38,10 +50,6 @@ def webhook():
     return "OK", 200
 
 # --- Global Instances ---
-if not TELEGRAM_BOT_TOKEN:
-    logging.error("TELEGRAM_BOT_TOKEN is not set. Please check your environment variables.")
-    exit("Error: TELEGRAM_BOT_TOKEN is not set.")
-
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
 solana_client = Client(SOLANA_RPC_URL)
 
