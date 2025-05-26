@@ -30,7 +30,7 @@ def index():
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+@app.route(f"/webhook", methods=["POST"])
 def webhook():
     json_string = request.get_data().decode("utf-8")
     update = types.Update.de_json(json_string)
@@ -221,7 +221,7 @@ def set_webhook():
         base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "https://primary-production-cd3d.up.railway.app")
         if not base_url.startswith("http"):
             base_url = f"https://{base_url}"
-        webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
+        webhook_url = f"{base_url}/webhook"
         result = bot.set_webhook(url=webhook_url)
         if result:
             logging.info(f"✅ Webhook set to {webhook_url}")
