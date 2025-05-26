@@ -22,8 +22,6 @@ if not TELEGRAM_BOT_TOKEN:
     missing.append("TELEGRAM_BOT_TOKEN")
 if not SOLANA_RPC_URL:
     missing.append("SOLANA_RPC_URL")
-# Removed WEBHOOK_BASE_URL from critical missing as it's not used by set_webhook's base_url directly.
-# The warning still appears if WEBHOOK_BASE_URL is not set, as per previous logs.
 
 if missing:
     logging.critical(f"❌ Critical: Missing environment variables: {', '.join(missing)}. Exiting.")
@@ -46,10 +44,12 @@ logging.basicConfig(
 app = Flask(__name__)
 
 # --- Global Instances (wrapped in try-except for debugging) ---
+# These must be initialized at the top level so Gunicorn can find them when importing the module
 bot = None
 solana_client = None
 conn = None
 cursor = None
+db_lock = threading.Lock() # db_lock also needs to be available globally
 
 try:
     logging.info("Attempting to initialize Telegram Bot and Solana Client...")
@@ -58,15 +58,12 @@ try:
     logging.info("Telegram Bot and Solana Client initialized.")
 except ValueError as e:
     logging.critical(f"❌ CRITICAL ERROR: Token Validation Failed: {e}")
-    # Re-raise to ensure process exits if token is invalid
-    raise
+    raise # Re-raise to ensure process exits if token is invalid
 except Exception as e:
     logging.critical(f"❌ CRITICAL ERROR during bot/solana client initialization: {e}")
-    # Re-raise to ensure process exits on other critical errors
-    raise
+    raise # Re-raise to ensure process exits on other critical errors
 
 # --- Database Setup (wrapped in try-except for debugging) ---
-db_lock = threading.Lock()
 try:
     logging.info(f"Attempting to connect to database: {DB_FILE}")
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -389,13 +386,15 @@ def set_webhook():
         logging.critical(f"❌ Exception in set_webhook: {e}", exc_info=True)
 
 # --- Bot Startup ---
+# This block is for local development only and is NOT executed by Gunicorn.
+# The global instances and webhook setup must be outside this block.
 if __name__ == "__main__":
-    logging.info("Bot startup initiated.")
+    logging.info("Bot startup initiated (local development mode).")
     try:
         set_webhook()
-        logging.info("Webhook setup attempted.")
+        logging.info("Webhook setup attempted (local development mode).")
     except Exception as e:
-        logging.critical(f"❌ CRITICAL ERROR: Webhook setup failed during startup: {e}", exc_info=True)
+        logging.critical(f"❌ CRITICAL ERROR: Webhook setup failed during local startup: {e}", exc_info=True)
 
     port = int(os.environ.get("PORT", 5000))
     # Flask app is managed by Gunicorn, so app.run() is not needed here
