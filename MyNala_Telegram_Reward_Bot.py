@@ -17,7 +17,7 @@ DB_FILE = "rewards.db"
 LOG_FILE = "reward_bot.log"
 
 # --- Logging Setup ---
-logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # --- Flask App for Webhook ---
 app = Flask(__name__)
@@ -38,6 +38,10 @@ def webhook():
     return "OK", 200
 
 # --- Global Instances ---
+if not TELEGRAM_BOT_TOKEN:
+    logging.error("TELEGRAM_BOT_TOKEN is not set. Please check your environment variables.")
+    exit("Error: TELEGRAM_BOT_TOKEN is not set.")
+
 bot = TeleBot(TELEGRAM_BOT_TOKEN)
 solana_client = Client(SOLANA_RPC_URL)
 
@@ -234,4 +238,4 @@ def set_webhook():
 if __name__ == "__main__":
     set_webhook()
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=True)
