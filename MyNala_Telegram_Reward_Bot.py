@@ -360,9 +360,10 @@ def set_webhook():
         # Consider exiting or retrying if webhook setup is critical for operation.
 
 # --- Bot Startup ---
+# --- Bot Startup ---
 if __name__ == "__main__":
-    # Set the webhook when the application starts
-    set_webhook()
+    set_webhook() # <--- THIS LINE MUST BE UNCOMMENTED
+    # ... (other code like logging.info)
     
     # Get port from environment, default to 5000 for local development
     port = int(os.environ.get("PORT", 5000))
