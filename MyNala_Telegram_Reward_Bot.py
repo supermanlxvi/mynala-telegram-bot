@@ -15,9 +15,9 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL")
 # WEBHOOK_BASE_URL is not strictly used for setting webhook URL, but for a warning
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL") # This variable is unused in the provided code, consider removing if not needed.
 
-# --- Define DB_FILE and LOG_FILE at the top (CORRECTED PLACEMENT) ---
+# --- Define DB_FILE and LOG_FILE at the top ---
 DB_FILE = "rewards.db"
 LOG_FILE = "reward_bot.log"
 
@@ -120,7 +120,7 @@ def verify_transaction(wallet: str, amount: int) -> bool:
         logging.error(f"General error during transaction check for {wallet}: {e}", exc_info=True)
         return False
 
-# --- Webhook Management Function (defined, but call moved for Gunicorn) ---
+# --- Webhook Management Function (defined, call moved to ensure Gunicorn starts serving first) ---
 def set_webhook_on_startup():
     logging.info("Webhook setup initiated on startup thread.")
     # Add a small delay to ensure Flask app is fully listening
@@ -142,7 +142,6 @@ def set_webhook_on_startup():
             base_url = f"https://{base_url}" # Default to HTTPS if not present
         elif base_url.startswith("http://"): # If it's http, change to https
             base_url = base_url.replace("http://", "https://")
-
 
         webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
         logging.info(f"Attempting to set webhook to {webhook_url}")
@@ -211,13 +210,13 @@ def webhook():
 def send_welcome(message):
     logging.info(f"Received /start or /help command from chat_id {message.chat.id}")
     bot.reply_to(message,
-                 "Welcome to MyNala Rewards Bot! 🚀\n\n"
-                 "Available commands:\n"
-                 "/verify <wallet> - Verify your wallet and link it to your Telegram chat ID.\n"
-                 "/status <wallet> - Check your current rewards status, streak, and volume.\n"
-                 "/buy <wallet> <amount> - Record a purchase and update your streak/volume.\n"
-                 "/claim <wallet> - View your total claimable rewards.\n"
-                 "/referrals <wallet> - Check your referral count.")
+                     "Welcome to MyNala Rewards Bot! 🚀\n\n"
+                     "Available commands:\n"
+                     "/verify <wallet> - Verify your wallet and link it to your Telegram chat ID.\n"
+                     "/status <wallet> - Check your current rewards status, streak, and volume.\n"
+                     "/buy <wallet> <amount> - Record a purchase and update your streak/volume.\n"
+                     "/claim <wallet> - View your total claimable rewards.\n"
+                     "/referrals <wallet> - Check your referral count.")
 
 @bot.message_handler(commands=['verify'])
 def verify_wallet(message):
@@ -286,12 +285,12 @@ def check_status(message):
                 verified, streak, volume, rewards = result
                 status = "✅ Verified" if verified else "❌ Not Verified"
                 bot.reply_to(message,
-                            f"📊 Status for `{wallet[:6]}...{wallet[-4:]}`:\n"
-                            f"{status}\n"
-                            f"📈 Volume: {volume} $MN\n"
-                            f"🔥 Streak: {streak} days\n"
-                            f"💰 Rewards: {rewards} $MN",
-                            parse_mode='Markdown')
+                                 f"📊 Status for `{wallet[:6]}...{wallet[-4:]}`:\n"
+                                 f"{status}\n"
+                                 f"📈 Volume: {volume} $MN\n"
+                                 f"🔥 Streak: {streak} days\n"
+                                 f"💰 Rewards: {rewards} $MN",
+                                 parse_mode='Markdown')
             else:
                 bot.reply_to(message, "Wallet not found. Please verify it first using /verify <wallet_address>.")
         except Exception as e:
@@ -353,113 +352,72 @@ def check_referrals(message):
 @bot.message_handler(commands=['buy'])
 def buy_tokens(message):
     logging.info(f"Received /buy command from chat_id {message.chat.id}")
-    parts = message.text.split()
-    if len(parts) < 3:
-        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
-        return
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
+        return
 
-    wallet = parts[1].strip()
-    if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
-        return
+    wallet = parts[1].strip()
+    if not wallet:
+        bot.reply_to(message, "Wallet address cannot be empty.")
+        return
 
-    try:
-        amount = int(parts[2])
-        if amount <= 0:
-            bot.reply_to(message, "Amount must be a positive integer.")
-            return
-    except ValueError:
-        bot.reply_to(message, "Amount must be an integer.")
-        return
+    try:
+        amount = int(parts[2])
+        if amount <= 0:
+            bot.reply_to(message, "Amount must be a positive integer.")
+            return
+    except ValueError:
+        bot.reply_to(message, "Amount must be an integer.")
+        return
 
-    chat_id = message.chat.id
-    now = datetime.now(timezone.utc)
-    today_str = now.strftime("%Y-%m-%d")
+    chat_id = message.chat.id
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
 
-    with db_lock:
-        try:
-            cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
-            result = cursor.fetchone()
+    with db_lock:
+        try:
+            cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+            result = cursor.fetchone()
 
-            if result:
-                streak, last_purchase_str, volume, rewards = result
+            if result:
+                streak, last_purchase_str, volume, rewards = result
 
-                if last_purchase_str:
-                    last_purchase_date = datetime.strptime(last_purchase_str, "%Y-%m-%d").date()
-                    if (now.date() - last_purchase_date).days == 1:
-                        streak += 1
-                    elif (now.date() - last_purchase_date).days == 0:
-                        pass # Same day, don't break/increase streak
-                    else:
-                        streak = 1
-                else:
-                    streak = 1
+                if last_purchase_str:
+                    last_purchase_date = datetime.strptime(last_purchase_str, "%Y-%m-%d").date()
+                    if (now.date() - last_purchase_date).days == 1:
+                        streak += 1
+                    elif (now.date() - last_purchase_date).days == 0:
+                        pass # Same day, don't break/increase streak
+                    else:
+                        streak = 1
+                else:
+                    streak = 1
 
-                volume += amount
-                reward = BUY_STREAK_REWARDS.get(streak, 0)
-                rewards += reward
+                volume += amount
+                reward = BUY_STREAK_REWARDS.get(streak, 0)
+                rewards += reward
 
-                cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
-                                (streak, today_str, volume, rewards, wallet))
-                conn.commit()
-                bot.reply_to(message,
-                                f"✅ Buy of {amount} $MN recorded for `{wallet[:6]}...{wallet[-4:]}`.\n"
-                                f"🔥 Streak: {streak} days\n"
-                                f"💰 Total Rewards: {rewards} $MN",
-                                parse_mode='Markdown')
-            else:
-                bot.reply_to(message, "Wallet not found. Please verify first.")
-        except Exception as e:
-            logging.error(f"Error during /buy for chat_id {message.chat.id}, wallet {wallet}, amount {amount}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while recording purchase. Please try again.")
-
-# --- Manual Webhook Setup (Moved to ensure Gunicorn starts serving first) ---
-# This function will be called AFTER the Flask app is fully set up.
-def set_webhook_on_startup():
-    logging.info("Webhook setup initiated on startup thread.")
-    # Add a small delay to ensure Flask app is fully listening
-    time.sleep(5) # Give Flask app time to bind to port and Gunicorn to warm up
-
-    try:
-        logging.info("Attempting to remove existing webhook...")
-        bot.remove_webhook()
-        time.sleep(1)
-
-        # Render uses `RENDER_EXTERNAL_HOSTNAME` for its public URL
-        base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-        if not base_url:
-            logging.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
-            return False
-
-        # Ensure base_url is explicitly HTTPS
-        if not base_url.startswith("http"): # Check for any http/https
-            base_url = f"https://{base_url}" # Default to HTTPS if not present
-        elif base_url.startswith("http://"): # If it's http, change to https
-            base_url = base_url.replace("http://", "https://")
-
-
-        webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
-        logging.info(f"Attempting to set webhook to {webhook_url}")
-        
-        result = bot.set_webhook(url=webhook_url)
-        if result:
-            logging.info(f"✅ Webhook successfully set to {webhook_url}")
-            return True
-        else:
-            logging.error(f"❌ Failed to set webhook to {webhook_url}. Result: {result}")
-            return False
-    except Exception as e:
-        logging.critical(f"❌ Exception in set_webhook_on_startup: {e}", exc_info=True)
-        return False
-
-# ... (rest of your code above webhook function)
+                cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
+                                 (streak, today_str, volume, rewards, wallet))
+                conn.commit()
+                bot.reply_to(message,
+                                 f"✅ Buy of {amount} $MN recorded for `{wallet[:6]}...{wallet[-4:]}`.\n"
+                                 f"🔥 Streak: {streak} days\n"
+                                 f"💰 Total Rewards: {rewards} $MN",
+                                 parse_mode='Markdown')
+            else:
+                bot.reply_to(message, "Wallet not found. Please verify first.")
+        except Exception as e:
+            logging.error(f"Error during /buy for chat_id {message.chat.id}, wallet {wallet}, amount {amount}: {e}", exc_info=True)
+            bot.reply_to(message, "An error occurred while recording purchase. Please try again.")
 
 # Call set_webhook_on_startup in a separate thread AFTER all routes are defined and app is ready
 # This allows Gunicorn to fully start the Flask app and bind to its port before the webhook call.
 try:
-    logging.info("Spawning thread for webhook setup...")
-    webhook_thread = threading.Thread(target=set_webhook_on_startup)
-    webhook_thread.start()
-    logging.info("Webhook setup thread started.")
+    logging.info("Spawning thread for webhook setup...")
+    webhook_thread = threading.Thread(target=set_webhook_on_startup)
+    webhook_thread.start()
+    logging.info("Webhook setup thread started.")
 except Exception as e:
-    logging.critical(f"❌ CRITICAL ERROR: Could not spawn webhook setup thread: {e}", exc_info=True)
+    logging.critical(f"❌ CRITICAL ERROR: Could not spawn webhook setup thread: {e}", exc_info=True)
