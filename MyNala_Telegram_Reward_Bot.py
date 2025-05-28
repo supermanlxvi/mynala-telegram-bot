@@ -417,19 +417,45 @@ def set_webhook_on_startup():
             base_url = base_url.replace("http://", "https://")
 
 
-        webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
-        logging.info(f"Attempting to set webhook to {webhook_url}")
-        
-        result = bot.set_webhook(url=webhook_url)
-        if result:
-            logging.info(f"✅ Webhook successfully set to {webhook_url}")
-            return True
-        else:
-            logging.error(f"❌ Failed to set webhook to {webhook_url}. Result: {result}")
-            return False
-    except Exception as e:
-        logging.critical(f"❌ Exception in set_webhook_on_startup: {e}", exc_info=True)
-        return False
+       # ... (rest of your code above webhook function)
+
+@app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+def webhook():
+    logging.info("Received POST request to webhook endpoint.")
+    if request.headers.get('content-type') == 'application/json':
+        try:
+            json_string = request.get_data().decode("utf-8")
+            update = types.Update.de_json(json_string)
+
+            # --- NEW LOGGING ADDED HERE ---
+            logging.info(f"Processing update ID: {update.update_id}")
+            if update.message:
+                logging.info(f"  Update Type: Message")
+                logging.info(f"  Chat ID: {update.message.chat.id}")
+                logging.info(f"  Chat Type: {update.message.chat.type}")
+                logging.info(f"  Message Text: '{update.message.text}'")
+                logging.info(f"  Is Command: {update.message.text.startswith('/')}") # Check if it looks like a command
+            elif update.channel_post:
+                logging.info(f"  Update Type: Channel Post")
+                logging.info(f"  Chat ID: {update.channel_post.chat.id}")
+                logging.info(f"  Chat Type: {update.channel_post.chat.type}")
+                logging.info(f"  Message Text: '{update.channel_post.text}'")
+                logging.info(f"  Is Command: {update.channel_post.text.startswith('/')}") # Check if it looks like a command
+            else:
+                logging.info(f"  Update Type: Other (Not Message or Channel Post). Keys: {update.to_dict().keys()}")
+            # --- END NEW LOGGING ---
+
+            bot.process_new_updates([update])
+            logging.info("Successfully processed new Telegram update.")
+            return "OK", 200
+        except Exception as e:
+            logging.error(f"❌ Error processing Telegram update: {e}", exc_info=True)
+            return "Error", 500
+    else:
+        logging.warning(f"Received webhook request with invalid content type: {request.headers.get('content-type')}")
+        return "Content-Type must be application/json", 400
+
+# ... (rest of your code below webhook function)
 
 # Call set_webhook_on_startup in a separate thread AFTER all routes are defined and app is ready
 # This allows Gunicorn to fully start the Flask app and bind to its port before the webhook call.
