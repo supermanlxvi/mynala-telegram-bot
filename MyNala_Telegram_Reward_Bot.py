@@ -352,7 +352,7 @@ def check_referrals(message):
 
 @bot.message_handler(commands=['buy'])
 def buy_tokens(message):
-    logging.info(f"Received /buy command from chat_id (message.chat_id}")
+    logging.info(f"Received /buy command from chat_id {message.chat.id}")
     parts = message.text.split()
     if len(parts) < 3:
         bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
