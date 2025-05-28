@@ -17,9 +17,22 @@ SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL")
 # WEBHOOK_BASE_URL is not strictly used for setting webhook URL, but for a warning
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
 
-# --- Logging Setup ---
-# Configure logging to also write to a file
+# --- Define DB_FILE and LOG_FILE at the top (CORRECTED PLACEMENT) ---
+DB_FILE = "rewards.db"
 LOG_FILE = "reward_bot.log"
+
+# --- Validate Required Environment Variables ---
+missing = []
+if not TELEGRAM_BOT_TOKEN:
+    missing.append("TELEGRAM_BOT_TOKEN")
+if not SOLANA_RPC_URL:
+    missing.append("SOLANA_RPC_URL")
+
+if missing:
+    logging.critical(f"❌ Critical: Missing environment variables: {', '.join(missing)}. Exiting.")
+    exit(1)
+
+# --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -83,7 +96,7 @@ except Exception as e:
     logging.critical(f"❌ CRITICAL ERROR during database setup (general): {e}", exc_info=True)
     raise
 
-# 4. Define Reward Constants
+# --- Reward Constants ---
 BUY_STREAK_REWARDS = {3: 50000, 5: 100000, 7: 200000, 14: 500000, 30: 1000000}
 LEADERBOARD_REWARDS = {1: 2000000, 2: 1000000, 3: 500000}
 REFERRAL_BONUS_CAP = 500000
@@ -115,17 +128,19 @@ def set_webhook():
         bot.remove_webhook()
         time.sleep(1)
 
-        # Use RAILWAY_PUBLIC_DOMAIN as base URL
-        base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+        base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN") # Render uses `RENDER_EXTERNAL_HOSTNAME` instead of RAILWAY_PUBLIC_DOMAIN
         if not base_url:
-            logging.critical("❌ CRITICAL ERROR: RAILWAY_PUBLIC_DOMAIN environment variable is not set. Cannot set webhook.")
-            return False # Exit early if no public domain
+            base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME") # Check for Render's hostname
+            if not base_url:
+                logging.critical("❌ CRITICAL ERROR: Neither RAILWAY_PUBLIC_DOMAIN nor RENDER_EXTERNAL_HOSTNAME environment variable is set. Cannot set webhook.")
+                return False # Exit early if no public domain
 
         # Ensure base_url is explicitly HTTPS
-        if base_url.startswith("http://"):
+        if not base_url.startswith("http"): # Check for any http/https
+            base_url = f"https://{base_url}" # Default to HTTPS if not present
+        elif base_url.startswith("http://"): # If it's http, change to https
             base_url = base_url.replace("http://", "https://")
-        elif not base_url.startswith("https://"):
-            base_url = f"https://{base_url}"
+
 
         webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
         logging.info(f"Attempting to set webhook to {webhook_url}")
@@ -170,7 +185,7 @@ def webhook():
         return "Content-Type must be application/json", 400
 
 # Important: message handlers must be defined AFTER `bot = TeleBot(TELEGRAM_BOT_TOKEN)`
-# and BEFORE `set_webhook()` is called (if called automatically).
+# and before `set_webhook()` is called (if called automatically).
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     logging.info(f"Received /start or /help command from chat_id {message.chat.id}")
@@ -389,15 +404,18 @@ def set_webhook_on_startup():
         bot.remove_webhook()
         time.sleep(1)
 
-        base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+        # Render uses `RENDER_EXTERNAL_HOSTNAME` for its public URL
+        base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
         if not base_url:
-            logging.critical("❌ CRITICAL ERROR: RAILWAY_PUBLIC_DOMAIN environment variable is not set. Cannot set webhook.")
+            logging.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
             return False
 
-        if base_url.startswith("http://"):
+        # Ensure base_url is explicitly HTTPS
+        if not base_url.startswith("http"): # Check for any http/https
+            base_url = f"https://{base_url}" # Default to HTTPS if not present
+        elif base_url.startswith("http://"): # If it's http, change to https
             base_url = base_url.replace("http://", "https://")
-        elif not base_url.startswith("https://"):
-            base_url = f"https://{base_url}"
+
 
         webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
         logging.info(f"Attempting to set webhook to {webhook_url}")
