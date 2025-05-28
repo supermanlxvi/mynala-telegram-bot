@@ -121,19 +121,21 @@ def verify_transaction(wallet: str, amount: int) -> bool:
         return False
 
 # --- Webhook Management Function (defined, but call moved for Gunicorn) ---
-def set_webhook():
-    """Sets the Telegram bot webhook URL."""
+def set_webhook_on_startup():
+    logging.info("Webhook setup initiated on startup thread.")
+    # Add a small delay to ensure Flask app is fully listening
+    time.sleep(5) # Give Flask app time to bind to port and Gunicorn to warm up
+
     try:
         logging.info("Attempting to remove existing webhook...")
         bot.remove_webhook()
         time.sleep(1)
 
-        base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN") # Render uses `RENDER_EXTERNAL_HOSTNAME` instead of RAILWAY_PUBLIC_DOMAIN
+        # Render uses `RENDER_EXTERNAL_HOSTNAME` for its public URL
+        base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
         if not base_url:
-            base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME") # Check for Render's hostname
-            if not base_url:
-                logging.critical("❌ CRITICAL ERROR: Neither RAILWAY_PUBLIC_DOMAIN nor RENDER_EXTERNAL_HOSTNAME environment variable is set. Cannot set webhook.")
-                return False # Exit early if no public domain
+            logging.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
+            return False
 
         # Ensure base_url is explicitly HTTPS
         if not base_url.startswith("http"): # Check for any http/https
@@ -153,7 +155,7 @@ def set_webhook():
             logging.error(f"❌ Failed to set webhook to {webhook_url}. Result: {result}")
             return False
     except Exception as e:
-        logging.critical(f"❌ Exception in set_webhook: {e}", exc_info=True)
+        logging.critical(f"❌ Exception in set_webhook_on_startup: {e}", exc_info=True)
         return False
 
 # --- Command Handlers (defined here, after bot is initialized) ---
@@ -174,7 +176,26 @@ def webhook():
         try:
             json_string = request.get_data().decode("utf-8")
             update = types.Update.de_json(json_string)
-            bot.process_new_updates([update]) # Process update using the global bot instance
+
+            # --- NEW LOGGING ADDED HERE ---
+            logging.info(f"Processing update ID: {update.update_id}")
+            if update.message:
+                logging.info(f"  Update Type: Message")
+                logging.info(f"  Chat ID: {update.message.chat.id}")
+                logging.info(f"  Chat Type: {update.message.chat.type}")
+                logging.info(f"  Message Text: '{update.message.text}'")
+                logging.info(f"  Is Command: {update.message.text.startswith('/')}") # Check if it looks like a command
+            elif update.channel_post:
+                logging.info(f"  Update Type: Channel Post")
+                logging.info(f"  Chat ID: {update.channel_post.chat.id}")
+                logging.info(f"  Chat Type: {update.channel_post.chat.type}")
+                logging.info(f"  Message Text: '{update.channel_post.text}'")
+                logging.info(f"  Is Command: {update.channel_post.text.startswith('/')}") # Check if it looks like a command
+            else:
+                logging.info(f"  Update Type: Other (Not Message or Channel Post). Keys: {update.to_dict().keys()}")
+            # --- END NEW LOGGING ---
+
+            bot.process_new_updates([update])
             logging.info("Successfully processed new Telegram update.")
             return "OK", 200
         except Exception as e:
@@ -331,142 +352,114 @@ def check_referrals(message):
 
 @bot.message_handler(commands=['buy'])
 def buy_tokens(message):
-    logging.info(f"Received /buy command from chat_id {message.chat.id}")
-    parts = message.text.split()
-    if len(parts) < 3:
-        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
-        return
+    logging.info(f"Received /buy command from chat_id {message.chat.id}")
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
+        return
 
-    wallet = parts[1].strip()
-    if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
-        return
+    wallet = parts[1].strip()
+    if not wallet:
+        bot.reply_to(message, "Wallet address cannot be empty.")
+        return
 
-    try:
-        amount = int(parts[2])
-        if amount <= 0:
-            bot.reply_to(message, "Amount must be a positive integer.")
-            return
-    except ValueError:
-        bot.reply_to(message, "Amount must be an integer.")
-        return
+    try:
+        amount = int(parts[2])
+        if amount <= 0:
+            bot.reply_to(message, "Amount must be a positive integer.")
+            return
+    except ValueError:
+        bot.reply_to(message, "Amount must be an integer.")
+        return
 
-    chat_id = message.chat.id
-    now = datetime.now(timezone.utc)
-    today_str = now.strftime("%Y-%m-%d")
+    chat_id = message.chat.id
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
 
-    with db_lock:
-        try:
-            cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
-            result = cursor.fetchone()
+    with db_lock:
+        try:
+            cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+            result = cursor.fetchone()
 
-            if result:
-                streak, last_purchase_str, volume, rewards = result
+            if result:
+                streak, last_purchase_str, volume, rewards = result
 
-                if last_purchase_str:
-                    last_purchase_date = datetime.strptime(last_purchase_str, "%Y-%m-%d").date()
-                    if (now.date() - last_purchase_date).days == 1:
-                        streak += 1
-                    elif (now.date() - last_purchase_date).days == 0:
-                        pass # Same day, don't break/increase streak
-                    else:
-                        streak = 1
-                else:
-                    streak = 1
+                if last_purchase_str:
+                    last_purchase_date = datetime.strptime(last_purchase_str, "%Y-%m-%d").date()
+                    if (now.date() - last_purchase_date).days == 1:
+                        streak += 1
+                    elif (now.date() - last_purchase_date).days == 0:
+                        pass # Same day, don't break/increase streak
+                    else:
+                        streak = 1
+                else:
+                    streak = 1
 
-                volume += amount
-                reward = BUY_STREAK_REWARDS.get(streak, 0)
-                rewards += reward
+                volume += amount
+                reward = BUY_STREAK_REWARDS.get(streak, 0)
+                rewards += reward
 
-                cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
-                                (streak, today_str, volume, rewards, wallet))
-                conn.commit()
-                bot.reply_to(message,
-                                f"✅ Buy of {amount} $MN recorded for `{wallet[:6]}...{wallet[-4:]}`.\n"
-                                f"🔥 Streak: {streak} days\n"
-                                f"💰 Total Rewards: {rewards} $MN",
-                                parse_mode='Markdown')
-            else:
-                bot.reply_to(message, "Wallet not found. Please verify first.")
-        except Exception as e:
-            logging.error(f"Error during /buy for chat_id {message.chat.id}, wallet {wallet}, amount {amount}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while recording purchase. Please try again.")
+                cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
+                                (streak, today_str, volume, rewards, wallet))
+                conn.commit()
+                bot.reply_to(message,
+                                f"✅ Buy of {amount} $MN recorded for `{wallet[:6]}...{wallet[-4:]}`.\n"
+                                f"🔥 Streak: {streak} days\n"
+                                f"💰 Total Rewards: {rewards} $MN",
+                                parse_mode='Markdown')
+            else:
+                bot.reply_to(message, "Wallet not found. Please verify first.")
+        except Exception as e:
+            logging.error(f"Error during /buy for chat_id {message.chat.id}, wallet {wallet}, amount {amount}: {e}", exc_info=True)
+            bot.reply_to(message, "An error occurred while recording purchase. Please try again.")
 
 # --- Manual Webhook Setup (Moved to ensure Gunicorn starts serving first) ---
 # This function will be called AFTER the Flask app is fully set up.
 def set_webhook_on_startup():
-    logging.info("Webhook setup initiated on startup thread.")
-    # Add a small delay to ensure Flask app is fully listening
-    time.sleep(5) # Give Flask app time to bind to port and Gunicorn to warm up
+    logging.info("Webhook setup initiated on startup thread.")
+    # Add a small delay to ensure Flask app is fully listening
+    time.sleep(5) # Give Flask app time to bind to port and Gunicorn to warm up
 
-    try:
-        logging.info("Attempting to remove existing webhook...")
-        bot.remove_webhook()
-        time.sleep(1)
+    try:
+        logging.info("Attempting to remove existing webhook...")
+        bot.remove_webhook()
+        time.sleep(1)
 
-        # Render uses `RENDER_EXTERNAL_HOSTNAME` for its public URL
-        base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-        if not base_url:
-            logging.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
-            return False
+        # Render uses `RENDER_EXTERNAL_HOSTNAME` for its public URL
+        base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+        if not base_url:
+            logging.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
+            return False
 
-        # Ensure base_url is explicitly HTTPS
-        if not base_url.startswith("http"): # Check for any http/https
-            base_url = f"https://{base_url}" # Default to HTTPS if not present
-        elif base_url.startswith("http://"): # If it's http, change to https
-            base_url = base_url.replace("http://", "https://")
+        # Ensure base_url is explicitly HTTPS
+        if not base_url.startswith("http"): # Check for any http/https
+            base_url = f"https://{base_url}" # Default to HTTPS if not present
+        elif base_url.startswith("http://"): # If it's http, change to https
+            base_url = base_url.replace("http://", "https://")
 
 
-       # ... (rest of your code above webhook function)
+        webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
+        logging.info(f"Attempting to set webhook to {webhook_url}")
+        
+        result = bot.set_webhook(url=webhook_url)
+        if result:
+            logging.info(f"✅ Webhook successfully set to {webhook_url}")
+            return True
+        else:
+            logging.error(f"❌ Failed to set webhook to {webhook_url}. Result: {result}")
+            return False
+    except Exception as e:
+        logging.critical(f"❌ Exception in set_webhook_on_startup: {e}", exc_info=True)
+        return False
 
-@app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def webhook():
-    logging.info("Received POST request to webhook endpoint.")
-    if request.headers.get('content-type') == 'application/json':
-        try:
-            json_string = request.get_data().decode("utf-8")
-            update = types.Update.de_json(json_string)
-
-            # --- NEW LOGGING ADDED HERE ---
-            logging.info(f"Processing update ID: {update.update_id}")
-            if update.message:
-                logging.info(f"  Update Type: Message")
-                logging.info(f"  Chat ID: {update.message.chat.id}")
-                logging.info(f"  Chat Type: {update.message.chat.type}")
-                logging.info(f"  Message Text: '{update.message.text}'")
-                logging.info(f"  Is Command: {update.message.text.startswith('/')}") # Check if it looks like a command
-            elif update.channel_post:
-                logging.info(f"  Update Type: Channel Post")
-                logging.info(f"  Chat ID: {update.channel_post.chat.id}")
-                logging.info(f"  Chat Type: {update.channel_post.chat.type}")
-                logging.info(f"  Message Text: '{update.channel_post.text}'")
-                logging.info(f"  Is Command: {update.channel_post.text.startswith('/')}") # Check if it looks like a command
-            else:
-                logging.info(f"  Update Type: Other (Not Message or Channel Post). Keys: {update.to_dict().keys()}")
-            # --- END NEW LOGGING ---
-
-            bot.process_new_updates([update])
-            logging.info("Successfully processed new Telegram update.")
-            return "OK", 200
-        except Exception as e:
-            logging.error(f"❌ Error processing Telegram update: {e}", exc_info=True)
-            return "Error", 500
-    else:
-        logging.warning(f"Received webhook request with invalid content type: {request.headers.get('content-type')}")
-        return "Content-Type must be application/json", 400
-
-# ... (rest of your code below webhook function)
+# ... (rest of your code above webhook function)
 
 # Call set_webhook_on_startup in a separate thread AFTER all routes are defined and app is ready
 # This allows Gunicorn to fully start the Flask app and bind to its port before the webhook call.
 try:
-    logging.info("Spawning thread for webhook setup...")
-    webhook_thread = threading.Thread(target=set_webhook_on_startup)
-    webhook_thread.start()
-    logging.info("Webhook setup thread started.")
+    logging.info("Spawning thread for webhook setup...")
+    webhook_thread = threading.Thread(target=set_webhook_on_startup)
+    webhook_thread.start()
+    logging.info("Webhook setup thread started.")
 except Exception as e:
-    logging.critical(f"❌ CRITICAL ERROR: Could not spawn webhook setup thread: {e}", exc_info=True)
-
-# --- Bot Startup (Removed local development block) ---
-# Gunicorn handles starting the Flask app. No need for if __name__ == "__main__": app.run()
-# or any other startup logic here.
+    logging.critical(f"❌ CRITICAL ERROR: Could not spawn webhook setup thread: {e}", exc_info=True)
