@@ -3,7 +3,7 @@ import sqlite3
 import time
 import logging
 from datetime import datetime, timedelta, timezone
-from telebot import TeleBot, types
+from telebot import TeleBot, types # pyTelegramBotAPI
 from solana.rpc.api import Client
 from solana.rpc.core import RPCException
 import threading
@@ -15,62 +15,65 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL")
 # WEBHOOK_BASE_URL is not strictly used for setting webhook URL, but for a warning
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL") # This variable is unused in the provided code, consider removing if not needed.
+# WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL") # This variable is unused, consider removing if not needed.
 
 # --- Define DB_FILE and LOG_FILE at the top ---
 DB_FILE = "rewards.db"
-LOG_FILE = "reward_bot.log"
+LOG_FILE = "reward_bot.log" # Will be created in the current working directory of the Render service
 
 # --- Validate Required Environment Variables ---
-missing = []
+missing_vars = []
 if not TELEGRAM_BOT_TOKEN:
-    missing.append("TELEGRAM_BOT_TOKEN")
+    missing_vars.append("TELEGRAM_BOT_TOKEN")
 if not SOLANA_RPC_URL:
-    missing.append("SOLANA_RPC_URL")
+    missing_vars.append("SOLANA_RPC_URL")
 
-if missing:
-    logging.critical(f"❌ Critical: Missing environment variables: {', '.join(missing)}. Exiting.")
+if missing_vars:
+    # Use basic logging if full setup hasn't happened, or print
+    print(f"CRITICAL: Missing environment variables: {', '.join(missing_vars)}. Exiting.")
+    # logging.critical(f"❌ Critical: Missing environment variables: {', '.join(missing_vars)}. Exiting.")
     exit(1)
 
 # --- Logging Setup ---
+# Gunicorn might also provide its own logging for web requests.
+# This setup adds application-specific logging.
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(threadName)s - %(levelname)s - %(message)s", # Added threadName
     handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE), # Log to a file
+        logging.StreamHandler()        # Log to console (visible in Render logs)
     ]
 )
+logger = logging.getLogger(__name__) # Create a logger instance for explicit use if needed
 
-# --- Global Instances and App Initialization (Ensuring proper order for Gunicorn) ---
-# These need to be initialized at the top level for Gunicorn to discover `app`
-# and for all bot handlers to be registered properly before app starts serving.
-
-# 1. Initialize Flask app
+# --- Global Instances and App Initialization ---
 app = Flask(__name__)
-logging.info("Flask app instance created.")
+logger.info("Flask app instance created.")
 
-# 2. Initialize Telegram Bot and Solana Client
 bot = None
 solana_client = None
 try:
-    logging.info("Attempting to initialize Telegram Bot and Solana Client...")
-    bot = TeleBot(TELEGRAM_BOT_TOKEN)
+    logger.info("Attempting to initialize Telegram Bot and Solana Client...")
+    bot = TeleBot(TELEGRAM_BOT_TOKEN, threaded=False) # Explicitly threaded=False; Flask handles concurrency.
     solana_client = Client(SOLANA_RPC_URL)
-    logging.info("Telegram Bot and Solana Client initialized.")
-except ValueError as e:
-    logging.critical(f"❌ CRITICAL ERROR: Token Validation Failed: {e}", exc_info=True)
-    raise # Re-raise to ensure process exits if token is invalid
+    logger.info("Telegram Bot and Solana Client initialized.")
+except ValueError as e: # TeleBot can raise ValueError for an invalid token format
+    logger.critical(f"❌ CRITICAL ERROR: Token Validation Failed: {e}", exc_info=True)
+    raise
 except Exception as e:
-    logging.critical(f"❌ CRITICAL ERROR during bot/solana client initialization: {e}", exc_info=True)
-    raise # Re-raise to ensure process exits on other critical errors
+    logger.critical(f"❌ CRITICAL ERROR during bot/solana client initialization: {e}", exc_info=True)
+    raise
 
-# 3. Initialize Database connection and cursor
 conn = None
 cursor = None
-db_lock = threading.Lock()
+db_lock = threading.Lock() # To ensure thread-safe SQLite operations
 try:
-    logging.info(f"Attempting to connect to database: {DB_FILE}")
+    logger.info(f"Attempting to connect to database: {DB_FILE}")
+    # check_same_thread=False is needed because Flask might handle requests in different threads,
+    # and this connection object might be shared or accessed by TeleBot's internal mechanisms
+    # if it were to use threads (though we set threaded=False for the bot instance).
+    # The db_lock provides explicit safety for our operations.
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     cursor = conn.cursor()
 
@@ -80,7 +83,7 @@ try:
         verified INTEGER DEFAULT 0,
         wallet TEXT UNIQUE,
         streak_days INTEGER DEFAULT 0,
-        last_purchase TEXT DEFAULT NULL,
+        last_purchase TEXT DEFAULT NULL, -- Store as YYYY-MM-DD string
         total_volume INTEGER DEFAULT 0,
         referral_count INTEGER DEFAULT 0,
         total_rewards INTEGER DEFAULT 0,
@@ -88,194 +91,235 @@ try:
     )
     ''')
     conn.commit()
-    logging.info("Database connected and schema verified.")
+    logger.info("Database connected and schema verified.")
 except sqlite3.Error as e:
-    logging.critical(f"❌ CRITICAL ERROR during database setup: {e}", exc_info=True)
+    logger.critical(f"❌ CRITICAL ERROR during database setup: {e}", exc_info=True)
     raise
 except Exception as e:
-    logging.critical(f"❌ CRITICAL ERROR during database setup (general): {e}", exc_info=True)
+    logger.critical(f"❌ CRITICAL ERROR during database setup (general): {e}", exc_info=True)
     raise
 
 # --- Reward Constants ---
 BUY_STREAK_REWARDS = {3: 50000, 5: 100000, 7: 200000, 14: 500000, 30: 1000000}
-LEADERBOARD_REWARDS = {1: 2000000, 2: 1000000, 3: 500000}
-REFERRAL_BONUS_CAP = 500000
-LEADERBOARD_RESET_INTERVAL_HOURS = 24 * 7
+LEADERBOARD_REWARDS = {1: 2000000, 2: 1000000, 3: 500000} # Not currently used in handlers
+REFERRAL_BONUS_CAP = 500000 # Not currently used in handlers
+LEADERBOARD_RESET_INTERVAL_HOURS = 24 * 7 # Not currently used
 
-# --- Solana Transaction Verification ---
-def verify_transaction(wallet: str, amount: int) -> bool:
+# --- Solana Transaction Verification (currently unused by commands) ---
+def verify_solana_transaction(wallet: str, amount: int) -> bool: # Renamed for clarity
     try:
+        logger.info(f"Verifying Solana transaction for wallet {wallet} (amount check not implemented here)")
         response = solana_client.get_signatures_for_address(wallet, limit=10)
         
-        if response and 'result' in response:
-            if response['result']:
-                logging.info(f"Recent transactions found for wallet {wallet}. Further verification (amount/memo) requires fetching full transaction details.")
-                return True
-        logging.info(f"No recent transactions found for wallet {wallet} or RPC response is empty.")
+        if response and response.get('result'): # Check if 'result' key exists and is not empty
+            logger.info(f"Recent transactions found for wallet {wallet}. Further verification (amount/memo) would require fetching full transaction details.")
+            return True # Basic check: activity found
+        logger.info(f"No recent transactions found for wallet {wallet} or RPC response is empty/malformed.")
         return False
     except RPCException as e:
-        logging.error(f"Solana RPC error during transaction check for {wallet}: {e}", exc_info=True)
+        logger.error(f"Solana RPC error during transaction check for {wallet}: {e}", exc_info=True)
         return False
     except Exception as e:
-        logging.error(f"General error during transaction check for {wallet}: {e}", exc_info=True)
+        logger.error(f"General error during transaction check for {wallet}: {e}", exc_info=True)
         return False
 
-# --- Webhook Management Function (defined, call moved to ensure Gunicorn starts serving first) ---
+# --- Webhook Management Function ---
 def set_webhook_on_startup():
-    logging.info("Webhook setup initiated on startup thread.")
-    # Add a small delay to ensure Flask app is fully listening
-    time.sleep(5) # Give Flask app time to bind to port and Gunicorn to warm up
+    logger.info("Webhook setup initiated on startup thread.")
+    time.sleep(5) # Give Flask app/Gunicorn time to fully bind and start
 
     try:
-        logging.info("Attempting to remove existing webhook...")
+        logger.info("Attempting to remove existing webhook...")
         bot.remove_webhook()
-        time.sleep(1)
+        logger.info("Existing webhook removed (or no webhook was set).")
+        time.sleep(1) # Brief pause
 
-        # Render uses `RENDER_EXTERNAL_HOSTNAME` for its public URL
         base_url = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
         if not base_url:
-            logging.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
+            logger.critical("❌ CRITICAL ERROR: RENDER_EXTERNAL_HOSTNAME environment variable is not set. Cannot set webhook.")
             return False
 
-        # Ensure base_url is explicitly HTTPS
-        if not base_url.startswith("http"): # Check for any http/https
-            base_url = f"https://{base_url}" # Default to HTTPS if not present
-        elif base_url.startswith("http://"): # If it's http, change to https
-            base_url = base_url.replace("http://", "https://")
+        if not base_url.startswith("https://"):
+            base_url = f"https://{base_url}"
+            logger.info(f"RENDER_EXTERNAL_HOSTNAME does not start with https. Prepended: {base_url}")
 
-        webhook_url = f"{base_url}/webhook/{TELEGRAM_BOT_TOKEN}"
-        logging.info(f"Attempting to set webhook to {webhook_url}")
+
+        webhook_url_path = f"/webhook/{TELEGRAM_BOT_TOKEN}"
+        full_webhook_url = f"{base_url.rstrip('/')}{webhook_url_path}" # Ensure no double slashes
         
-        result = bot.set_webhook(url=webhook_url)
+        logger.info(f"Attempting to set webhook to {full_webhook_url}")
+        
+        # `allowed_updates` can be specified to only receive certain update types
+        result = bot.set_webhook(url=full_webhook_url) #, allowed_updates=['message'])
+        
         if result:
-            logging.info(f"✅ Webhook successfully set to {webhook_url}")
+            logger.info(f"✅ Webhook successfully set to {full_webhook_url}")
+            # Optionally verify webhook
+            # webhook_info = bot.get_webhook_info()
+            # logger.info(f"Webhook info from Telegram: {webhook_info}")
             return True
         else:
-            logging.error(f"❌ Failed to set webhook to {webhook_url}. Result: {result}")
+            logger.error(f"❌ Failed to set webhook to {full_webhook_url}. Result: {result}")
+            # webhook_info = bot.get_webhook_info() # Check what Telegram thinks about the webhook
+            # logger.error(f"Webhook info from Telegram after failed set attempt: {webhook_info}")
             return False
     except Exception as e:
-        logging.critical(f"❌ Exception in set_webhook_on_startup: {e}", exc_info=True)
+        logger.critical(f"❌ Exception in set_webhook_on_startup: {e}", exc_info=True)
         return False
 
-# --- Command Handlers (defined here, after bot is initialized) ---
+# --- Flask Routes ---
 @app.route("/", methods=["GET"])
 def index():
-    logging.info("Received GET request to /")
-    return "✅ MyNala Bot is running", 200
+    logger.info("Received GET request to /")
+    return "✅ MyNala Bot is running with TeleBot and Flask!", 200
 
 @app.route("/health", methods=["GET"])
-def health():
-    logging.info("Received GET request to /health")
-    return jsonify({"status": "ok"}), 200
+def health_check(): # Renamed for clarity
+    logger.info("Received GET request to /health")
+    # Basic health check, can be expanded (e.g., check DB connection, Solana client ping)
+    return jsonify({"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}), 200
 
 @app.route(f"/webhook/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def webhook():
-    logging.info("Received POST request to webhook endpoint.")
+def webhook_handler(): # Renamed for clarity
     if request.headers.get('content-type') == 'application/json':
         try:
             json_string = request.get_data().decode("utf-8")
             update = types.Update.de_json(json_string)
 
-            # --- NEW LOGGING ADDED HERE ---
-            logging.info(f"Processing update ID: {update.update_id}")
+            logger.info(f"Webhook received Update ID: {update.update_id}")
             if update.message:
-                logging.info(f"  Update Type: Message")
-                logging.info(f"  Chat ID: {update.message.chat.id}")
-                logging.info(f"  Chat Type: {update.message.chat.type}")
-                logging.info(f"  Message Text: '{update.message.text}'")
-                logging.info(f"  Is Command: {update.message.text.startswith('/')}") # Check if it looks like a command
-            elif update.channel_post:
-                logging.info(f"  Update Type: Channel Post")
-                logging.info(f"  Chat ID: {update.channel_post.chat.id}")
-                logging.info(f"  Chat Type: {update.channel_post.chat.type}")
-                logging.info(f"  Message Text: '{update.channel_post.text}'")
-                logging.info(f"  Is Command: {update.channel_post.text.startswith('/')}") # Check if it looks like a command
+                logger.info(f"  Type: Message, Chat ID: {update.message.chat.id}, User: {update.message.from_user.username if update.message.from_user else 'N/A'}, Text: '{update.message.text}'")
+            elif update.edited_message:
+                logger.info(f"  Type: Edited Message, Chat ID: {update.edited_message.chat.id}, Text: '{update.edited_message.text}'")
+            # Add other update types if needed (callback_query, etc.)
             else:
-                logging.info(f"  Update Type: Other (Not Message or Channel Post). Keys: {update.to_dict().keys()}")
-            # --- END NEW LOGGING ---
+                logger.info(f"  Type: Other (not a standard message). Update keys: {update.to_dict().keys()}")
 
             bot.process_new_updates([update])
-            logging.info("Successfully processed new Telegram update.")
+            # logger.info(f"Webhook Update ID {update.update_id} passed to bot.process_new_updates.")
+            # Note: "Successfully processed" is implicitly true if no exception bubbles up from process_new_updates.
+            # The actual success of command execution will be logged by the handlers.
             return "OK", 200
         except Exception as e:
-            logging.error(f"❌ Error processing Telegram update: {e}", exc_info=True)
-            return "Error", 500
+            logger.error(f"❌ Error processing Telegram update in webhook_handler: {e}", exc_info=True)
+            return "Error processing update", 500 # Signal error to Telegram
     else:
-        logging.warning(f"Received webhook request with invalid content type: {request.headers.get('content-type')}")
+        logger.warning(f"Webhook received request with invalid content type: {request.headers.get('content-type')}")
         return "Content-Type must be application/json", 400
 
-# Important: message handlers must be defined AFTER `bot = TeleBot(TELEGRAM_BOT_TOKEN)`
-# and before `set_webhook()` is called (if called automatically).
+# --- Telegram Bot Command Handlers ---
+
+def _safe_reply_to(message, text, **kwargs):
+    """Helper function to safely send replies and log issues."""
+    chat_id = message.chat.id
+    command_text = message.text.split()[0] if message.text and message.text.startswith('/') else "N/A"
+    logger.info(f"ChatID {chat_id} ({command_text}): Attempting to send reply. Markdown: {kwargs.get('parse_mode') == 'Markdown'}. Text: '''{text[:200]}...'''") # Log part of text
+    try:
+        bot.reply_to(message, text, **kwargs)
+        logger.info(f"ChatID {chat_id} ({command_text}): Successfully called bot.reply_to.")
+    except Exception as e:
+        logger.error(f"ChatID {chat_id} ({command_text}): Error during bot.reply_to. Text: '''{text[:200]}...'''. Error: {e}", exc_info=True)
+        # Fallback for Markdown errors
+        if kwargs.get('parse_mode') == 'Markdown':
+            logger.warning(f"ChatID {chat_id} ({command_text}): Markdown reply failed. Attempting plain text fallback.")
+            try:
+                plain_text = f"Error displaying formatted message. Original content was intended to be: {text}" # Simplistic fallback
+                bot.reply_to(message, plain_text) # Try without parse_mode
+                logger.info(f"ChatID {chat_id} ({command_text}): Plain text fallback reply sent.")
+            except Exception as e_fallback:
+                logger.error(f"ChatID {chat_id} ({command_text}): Error during plain text fallback bot.reply_to: {e_fallback}", exc_info=True)
+
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    logging.info(f"Received /start or /help command from chat_id {message.chat.id}")
-    bot.reply_to(message,
-                     "Welcome to MyNala Rewards Bot! 🚀\n\n"
-                     "Available commands:\n"
-                     "/verify <wallet> - Verify your wallet and link it to your Telegram chat ID.\n"
-                     "/status <wallet> - Check your current rewards status, streak, and volume.\n"
-                     "/buy <wallet> <amount> - Record a purchase and update your streak/volume.\n"
-                     "/claim <wallet> - View your total claimable rewards.\n"
-                     "/referrals <wallet> - Check your referral count.")
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /start or /help command.")
+    welcome_text = (
+        "Welcome to MyNala Rewards Bot! 🚀\n\n"
+        "Available commands:\n"
+        "/ping - Check if the bot is responsive.\n"
+        "/verify <wallet> - Verify your wallet and link it to your Telegram chat ID.\n"
+        "/status <wallet> - Check your current rewards status, streak, and volume.\n"
+        "/buy <wallet> <amount> - Record a purchase and update your streak/volume.\n"
+        "/claim <wallet> - View your total claimable rewards.\n"
+        "/referrals <wallet> - Check your referral count."
+    )
+    _safe_reply_to(message, welcome_text)
+
+@bot.message_handler(commands=['ping'])
+def ping_command(message):
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /ping command.")
+    _safe_reply_to(message, "Pong! I am here. ✅")
+
 
 @bot.message_handler(commands=['verify'])
 def verify_wallet(message):
-    logging.info(f"Received /verify command from chat_id {message.chat.id}")
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /verify command. Full text: '{message.text}'")
     parts = message.text.split()
+    
     if len(parts) < 2:
-        bot.reply_to(message, "Usage: /verify <wallet_address>")
+        _safe_reply_to(message, "Usage: /verify <wallet_address>")
         return
 
     wallet = parts[1].strip()
-    chat_id = message.chat.id
-
-    if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
+    if not wallet: # Basic validation for wallet format can be added here
+        _safe_reply_to(message, "Wallet address cannot be empty. Please provide a valid Solana wallet address.")
         return
-
+    
+    logger.info(f"ChatID {chat_id}: Processing /verify for wallet: {wallet}")
     with db_lock:
         try:
             cursor.execute("SELECT chat_id, verified FROM users WHERE wallet=?", (wallet,))
             result = cursor.fetchone()
+            reply_made = False
 
             if result:
                 existing_chat_id, current_verified_status = result
                 if existing_chat_id == chat_id:
                     if current_verified_status:
-                        bot.reply_to(message, f"✅ Wallet {wallet[:6]}...{wallet[-4:]} is already verified and linked to your account.")
-                    else:
-                        cursor.execute("UPDATE users SET verified=1, chat_id=? WHERE wallet=?", (chat_id, wallet))
+                        _safe_reply_to(message, f"✅ Wallet {wallet[:6]}...{wallet[-4:]} is already verified and linked to this account.")
+                    else: # Wallet exists, linked to this chat_id, but not verified (shouldn't happen if insert requires verify=1)
+                        cursor.execute("UPDATE users SET verified=1 WHERE wallet=? AND chat_id=?", (wallet, chat_id))
                         conn.commit()
-                        bot.reply_to(message, f"✅ Wallet {wallet[:6]}...{wallet[-4:]} is now verified and linked to your account.")
-                else:
-                    bot.reply_to(message, f"❌ Wallet {wallet[:6]}...{wallet[-4:]} is already linked to another Telegram account.")
-            else:
-                now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                cursor.execute("INSERT INTO users (chat_id, wallet, verified, last_purchase) VALUES (?, ?, ?, ?)",
-                               (chat_id, wallet, 1, now))
+                        _safe_reply_to(message, f"✅ Wallet {wallet[:6]}...{wallet[-4:]} is now re-verified and linked to your account.")
+                else: # Wallet exists but linked to a different chat_id
+                    _safe_reply_to(message, f"❌ Wallet {wallet[:6]}...{wallet[-4:]} is already linked to another Telegram account.")
+            else: # New wallet
+                now_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                # For a new wallet, verification implies it's associated with this chat_id
+                cursor.execute("INSERT INTO users (chat_id, wallet, verified, last_purchase) VALUES (?, ?, 1, ?)",
+                               (chat_id, wallet, now_utc_str)) # Ensure verified is 1
                 conn.commit()
-                bot.reply_to(message, f"✅ Wallet {wallet[:6]}...{wallet[-4:]} is now verified and linked to your account.")
+                _safe_reply_to(message, f"✅ Wallet {wallet[:6]}...{wallet[-4:]} is now verified and linked to your account.")
+            
+        except sqlite3.IntegrityError as e: # Handles UNIQUE constraint violation for wallet
+            logger.error(f"ChatID {chat_id}: Database integrity error during /verify for wallet {wallet}: {e}", exc_info=False) # No need for full trace for common integrity error
+            _safe_reply_to(message, f"❌ This wallet address ({wallet[:6]}...{wallet[-4:]}) might already be registered or there's a conflict. If you believe this is an error, contact support.")
         except sqlite3.Error as e:
-            logging.error(f"Database error during /verify for chat_id {chat_id}, wallet {wallet}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while processing your request. Please try again.")
+            logger.error(f"ChatID {chat_id}: Database error during /verify for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while processing your verification. Please try again.")
         except Exception as e:
-            logging.error(f"General error during /verify for chat_id {chat_id}, wallet {wallet}: {e}", exc_info=True)
-            bot.reply_to(message, "An unexpected error occurred. Please try again.")
+            logger.error(f"ChatID {chat_id}: General error during /verify for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred during verification. Please try again.")
 
 
 @bot.message_handler(commands=['status'])
 def check_status(message):
-    logging.info(f"Received /status command from chat_id {message.chat.id}")
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /status command. Full text: '{message.text}'")
     parts = message.text.split()
+
     if len(parts) < 2:
-        bot.reply_to(message, "Usage: /status <wallet_address>")
+        _safe_reply_to(message, "Usage: /status <wallet_address>")
         return
 
     wallet = parts[1].strip()
     if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
+        _safe_reply_to(message, "Wallet address cannot be empty.")
         return
 
+    logger.info(f"ChatID {chat_id}: Processing /status for wallet: {wallet}")
     with db_lock:
         try:
             cursor.execute("SELECT verified, streak_days, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
@@ -283,141 +327,216 @@ def check_status(message):
 
             if result:
                 verified, streak, volume, rewards = result
-                status = "✅ Verified" if verified else "❌ Not Verified"
-                bot.reply_to(message,
-                                 f"📊 Status for `{wallet[:6]}...{wallet[-4:]}`:\n"
-                                 f"{status}\n"
-                                 f"📈 Volume: {volume} $MN\n"
-                                 f"🔥 Streak: {streak} days\n"
-                                 f"💰 Rewards: {rewards} $MN",
-                                 parse_mode='Markdown')
+                status_msg = "✅ Verified" if verified else "❌ Not Verified (use /verify)"
+                
+                reply_text = (
+                    f"📊 Status for `{wallet[:6]}...{wallet[-4:]}`:\n"
+                    f"Verification: {status_msg}\n"
+                    f"📈 Volume: {volume} $MN\n"
+                    f"🔥 Streak: {streak} days\n"
+                    f"💰 Total Rewards: {rewards} $MN"
+                )
+                _safe_reply_to(message, reply_text, parse_mode='Markdown')
             else:
-                bot.reply_to(message, "Wallet not found. Please verify it first using /verify <wallet_address>.")
+                _safe_reply_to(message, "Wallet not found. Please verify it first using /verify <wallet_address>.")
+        
+        except sqlite3.Error as e:
+            logger.error(f"ChatID {chat_id}: Database error during /status for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while fetching your status. Please try again.")
         except Exception as e:
-            logging.error(f"Error during /status for chat_id {message.chat.id}, wallet {wallet}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while fetching status. Please try again.")
+            logger.error(f"ChatID {chat_id}: General error during /status for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred while fetching status. Please try again.")
+
 
 @bot.message_handler(commands=['claim'])
 def claim_rewards(message):
-    logging.info(f"Received /claim command from chat_id {message.chat.id}")
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /claim command. Full text: '{message.text}'")
     parts = message.text.split()
     if len(parts) < 2:
-        bot.reply_to(message, "Usage: /claim <wallet_address>")
+        _safe_reply_to(message, "Usage: /claim <wallet_address>")
         return
 
     wallet = parts[1].strip()
     if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
+        _safe_reply_to(message, "Wallet address cannot be empty.")
         return
 
+    logger.info(f"ChatID {chat_id}: Processing /claim for wallet: {wallet}")
     with db_lock:
         try:
-            cursor.execute("SELECT total_rewards FROM users WHERE wallet=?", (wallet,))
+            cursor.execute("SELECT total_rewards, verified FROM users WHERE wallet=?", (wallet,))
             result = cursor.fetchone()
 
             if result:
-                bot.reply_to(message, f"💰 Wallet `{wallet[:6]}...{wallet[-4:]}` has {result[0]} $MN in rewards.")
+                total_rewards_val, verified_status = result
+                if not verified_status:
+                    _safe_reply_to(message, f"⚠️ Wallet `{wallet[:6]}...{wallet[-4:]}` is not verified. Please use /verify first. Current rewards (unclaimable): {total_rewards_val} $MN", parse_mode='Markdown')
+                else:
+                     _safe_reply_to(message, f"💰 Wallet `{wallet[:6]}...{wallet[-4:]}` has {total_rewards_val} $MN in rewards. Claiming functionality is processed separately.", parse_mode='Markdown')
             else:
-                bot.reply_to(message, "Wallet not found.")
+                _safe_reply_to(message, "Wallet not found. Please use /verify first.")
+        except sqlite3.Error as e:
+            logger.error(f"ChatID {chat_id}: Database error during /claim for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while checking your claimable rewards.")
         except Exception as e:
-            logging.error(f"Error during /claim for chat_id {message.chat.id}, wallet {wallet}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while checking claims. Please try again.")
+            logger.error(f"ChatID {chat_id}: General error during /claim for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred while checking claims.")
+
 
 @bot.message_handler(commands=['referrals'])
 def check_referrals(message):
-    logging.info(f"Received /referrals command from chat_id {message.chat.id}")
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /referrals command. Full text: '{message.text}'")
     parts = message.text.split()
     if len(parts) < 2:
-        bot.reply_to(message, "Usage: /referrals <wallet_address>")
+        _safe_reply_to(message, "Usage: /referrals <wallet_address>")
         return
 
     wallet = parts[1].strip()
     if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
+        _safe_reply_to(message, "Wallet address cannot be empty.")
         return
-
+    
+    logger.info(f"ChatID {chat_id}: Processing /referrals for wallet: {wallet}")
     with db_lock:
         try:
-            cursor.execute("SELECT referral_count FROM users WHERE wallet=?", (wallet,))
+            cursor.execute("SELECT referral_count, verified FROM users WHERE wallet=?", (wallet,))
             result = cursor.fetchone()
 
             if result:
-                bot.reply_to(message, f"📣 Wallet `{wallet[:6]}...{wallet[-4:]}` has {result[0]} referral(s).")
+                ref_count, verified_status = result
+                if not verified_status:
+                     _safe_reply_to(message, f"⚠️ Wallet `{wallet[:6]}...{wallet[-4:]}` is not verified. Please use /verify first. Referral count: {ref_count}.", parse_mode='Markdown')
+                else:
+                    _safe_reply_to(message, f"📣 Wallet `{wallet[:6]}...{wallet[-4:]}` has {ref_count} referral(s).", parse_mode='Markdown')
             else:
-                bot.reply_to(message, "Wallet not found.")
+                _safe_reply_to(message, "Wallet not found. Please use /verify first.")
+        except sqlite3.Error as e:
+            logger.error(f"ChatID {chat_id}: Database error during /referrals for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while checking your referrals.")
         except Exception as e:
-            logging.error(f"Error during /referrals for chat_id {message.chat.id}, wallet {wallet}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while checking referrals. Please try again.")
+            logger.error(f"ChatID {chat_id}: General error during /referrals for wallet {wallet}: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred while checking referrals.")
+
 
 @bot.message_handler(commands=['buy'])
 def buy_tokens(message):
-    logging.info(f"Received /buy command from chat_id {message.chat.id}")
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /buy command. Full text: '{message.text}'")
     parts = message.text.split()
     if len(parts) < 3:
-        bot.reply_to(message, "Usage: /buy <wallet_address> <amount>")
+        _safe_reply_to(message, "Usage: /buy <wallet_address> <amount_MN_tokens>")
         return
 
     wallet = parts[1].strip()
     if not wallet:
-        bot.reply_to(message, "Wallet address cannot be empty.")
+        _safe_reply_to(message, "Wallet address cannot be empty.")
         return
 
     try:
         amount = int(parts[2])
         if amount <= 0:
-            bot.reply_to(message, "Amount must be a positive integer.")
+            _safe_reply_to(message, "Amount must be a positive integer.")
             return
     except ValueError:
-        bot.reply_to(message, "Amount must be an integer.")
+        _safe_reply_to(message, "Amount must be a valid integer (e.g., 1000).")
         return
 
-    chat_id = message.chat.id
-    now = datetime.now(timezone.utc)
-    today_str = now.strftime("%Y-%m-%d")
+    logger.info(f"ChatID {chat_id}: Processing /buy for wallet {wallet}, amount {amount}")
+    
+    # Note: Actual Solana transaction verification for the buy isn't implemented here.
+    # This command currently *records* a buy based on user input.
+    # You would need a robust way to confirm the buy on-chain if this is for actual rewards.
+    # For now, we assume the user is honestly reporting a buy for tracking purposes.
+
+    now_utc = datetime.now(timezone.utc)
+    today_utc_str = now_utc.strftime("%Y-%m-%d")
 
     with db_lock:
         try:
-            cursor.execute("SELECT streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
+            cursor.execute("SELECT verified, streak_days, last_purchase, total_volume, total_rewards FROM users WHERE wallet=?", (wallet,))
             result = cursor.fetchone()
 
             if result:
-                streak, last_purchase_str, volume, rewards = result
+                verified_status, current_streak, last_purchase_str, current_volume, current_rewards = result
 
+                if not verified_status:
+                    _safe_reply_to(message, f"⚠️ Wallet `{wallet[:6]}...{wallet[-4:]}` is not verified. Please use /verify first before recording buys.", parse_mode='Markdown')
+                    return
+
+                new_streak = current_streak
                 if last_purchase_str:
                     last_purchase_date = datetime.strptime(last_purchase_str, "%Y-%m-%d").date()
-                    if (now.date() - last_purchase_date).days == 1:
-                        streak += 1
-                    elif (now.date() - last_purchase_date).days == 0:
-                        pass # Same day, don't break/increase streak
-                    else:
-                        streak = 1
-                else:
-                    streak = 1
+                    days_diff = (now_utc.date() - last_purchase_date).days
+                    if days_diff == 1: # Purchase on consecutive day
+                        new_streak += 1
+                    elif days_diff > 1: # Streak broken
+                        new_streak = 1 # Reset to 1 for today's purchase
+                    # If days_diff == 0 (same day purchase), streak doesn't change yet, but purchase updates.
+                    # If days_diff < 0 (last_purchase in future), data error, treat as streak reset.
+                    elif days_diff < 0:
+                        new_streak = 1
+                        logger.warning(f"ChatID {chat_id}: last_purchase_date for wallet {wallet} was in the future ({last_purchase_str}). Resetting streak.")
 
-                volume += amount
-                reward = BUY_STREAK_REWARDS.get(streak, 0)
-                rewards += reward
+                else: # No previous purchase, this is the first day of the streak
+                    new_streak = 1
+                
+                new_volume = current_volume + amount
+                streak_reward_gained = BUY_STREAK_REWARDS.get(new_streak, 0) # Reward for *achieving* this new_streak
+                new_total_rewards = current_rewards + streak_reward_gained
 
-                cursor.execute("UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
-                                 (streak, today_str, volume, rewards, wallet))
+                cursor.execute(
+                    "UPDATE users SET streak_days=?, last_purchase=?, total_volume=?, total_rewards=? WHERE wallet=?",
+                    (new_streak, today_utc_str, new_volume, new_total_rewards, wallet)
+                )
                 conn.commit()
-                bot.reply_to(message,
-                                 f"✅ Buy of {amount} $MN recorded for `{wallet[:6]}...{wallet[-4:]}`.\n"
-                                 f"🔥 Streak: {streak} days\n"
-                                 f"💰 Total Rewards: {rewards} $MN",
-                                 parse_mode='Markdown')
-            else:
-                bot.reply_to(message, "Wallet not found. Please verify first.")
-        except Exception as e:
-            logging.error(f"Error during /buy for chat_id {message.chat.id}, wallet {wallet}, amount {amount}: {e}", exc_info=True)
-            bot.reply_to(message, "An error occurred while recording purchase. Please try again.")
+                
+                reply_parts = [
+                    f"✅ Buy of {amount} $MN recorded for `{wallet[:6]}...{wallet[-4:]}`.",
+                    f"🔥 New Streak: {new_streak} days.",
+                    f"📈 New Total Volume: {new_volume} $MN."
+                ]
+                if streak_reward_gained > 0:
+                    reply_parts.append(f"🎉 Streak Reward: +{streak_reward_gained} $MN for reaching {new_streak} days!")
+                reply_parts.append(f"💰 New Total Rewards: {new_total_rewards} $MN.")
+                
+                _safe_reply_to(message, "\n".join(reply_parts), parse_mode='Markdown')
 
-# Call set_webhook_on_startup in a separate thread AFTER all routes are defined and app is ready
-# This allows Gunicorn to fully start the Flask app and bind to its port before the webhook call.
-try:
-    logging.info("Spawning thread for webhook setup...")
-    webhook_thread = threading.Thread(target=set_webhook_on_startup)
-    webhook_thread.start()
-    logging.info("Webhook setup thread started.")
-except Exception as e:
-    logging.critical(f"❌ CRITICAL ERROR: Could not spawn webhook setup thread: {e}", exc_info=True)
+            else:
+                _safe_reply_to(message, "Wallet not found. Please use /verify <wallet_address> first to register your wallet.")
+        
+        except sqlite3.Error as e:
+            logger.error(f"ChatID {chat_id}: Database error during /buy for wallet {wallet}, amount {amount}: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while recording your purchase. Please try again.")
+        except Exception as e:
+            logger.error(f"ChatID {chat_id}: General error during /buy for wallet {wallet}, amount {amount}: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred while recording your purchase. Please try again.")
+
+
+# --- Main Gunicorn Entry Point and Webhook Thread ---
+if __name__ == "__main__":
+    # This block is useful for local testing WITHOUT Gunicorn.
+    # For Render, Gunicorn calls `app` directly.
+    logger.info("Starting Flask app directly (for local testing without Gunicorn). Webhook will NOT be set automatically here.")
+    # To test webhook locally, you'd need a tool like ngrok and manually set the webhook
+    # OR run the set_webhook_on_startup function after ngrok is running and provides a URL.
+    # Example: If you had ngrok running:
+    # bot.remove_webhook()
+    # time.sleep(1)
+    # NGROK_URL = "https_your_ngrok_url.ngrok.io" # Replace with your ngrok URL
+    # bot.set_webhook(url=f"{NGROK_URL}/webhook/{TELEGRAM_BOT_TOKEN}")
+    # logger.info(f"Local webhook set to {NGROK_URL}/webhook/{TELEGRAM_BOT_TOKEN}")
+    
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+    # When running with Gunicorn, the webhook setup thread below is more relevant.
+
+else: # This block will be executed when Gunicorn imports the file
+    try:
+        logger.info("Spawning thread for webhook setup (Gunicorn environment)...")
+        webhook_thread = threading.Thread(target=set_webhook_on_startup, name="WebhookSetupThread")
+        webhook_thread.daemon = True # Allow main program to exit even if thread is running
+        webhook_thread.start()
+        logger.info("Webhook setup thread started.")
+    except Exception as e:
+        logger.critical(f"❌ CRITICAL ERROR: Could not spawn webhook setup thread: {e}", exc_info=True)
