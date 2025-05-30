@@ -241,7 +241,8 @@ def send_welcome(message):
         "/status <wallet> - Check your current rewards status, streak, and volume.\n"
         "/buy <wallet> <amount> - Record a purchase and update your streak/volume.\n"
         "/claim <wallet> - View your total claimable rewards.\n"
-        "/referrals <wallet> - Check your referral count."
+        "/referrals <wallet> - Check your referral count.\n" # Added comma here
+        "/leaderboard - View top users." # New command
     )
     _safe_reply_to(message, welcome_text)
 
@@ -250,6 +251,73 @@ def ping_command(message):
     chat_id = message.chat.id
     logger.info(f"ChatID {chat_id}: Received /ping command.")
     _safe_reply_to(message, "Pong! I am here. ✅")
+
+@bot.message_handler(commands=['leaderboard'])
+def send_leaderboard(message):
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /leaderboard command.")
+
+    limit = 5  # Top 5 users
+    leaderboard_sections = []
+
+    with db_lock:
+        try:
+            # --- Top 5 by Total Volume ---
+            logger.info(f"ChatID {chat_id}: Fetching top {limit} users by total_volume.")
+            cursor.execute("SELECT wallet, total_volume FROM users WHERE verified=1 ORDER BY total_volume DESC LIMIT ?", (limit,))
+            top_volume_users = cursor.fetchall()
+            
+            volume_leaderboard = f"🏆 *Top {limit} by Volume ($MN)* 🏆\n"
+            if top_volume_users:
+                for i, user_data in enumerate(top_volume_users):
+                    wallet_short = f"{user_data[0][:6]}...{user_data[0][-4:]}" if user_data[0] else "N/A"
+                    volume_leaderboard += f"{i+1}. `{wallet_short}` - {user_data[1]:,} $MN\n"
+            else:
+                volume_leaderboard += "_No users with volume found._\n"
+            leaderboard_sections.append(volume_leaderboard)
+
+            # --- Top 5 by Total Rewards ---
+            logger.info(f"ChatID {chat_id}: Fetching top {limit} users by total_rewards.")
+            cursor.execute("SELECT wallet, total_rewards FROM users WHERE verified=1 ORDER BY total_rewards DESC LIMIT ?", (limit,))
+            top_rewards_users = cursor.fetchall()
+
+            rewards_leaderboard = f"💰 *Top {limit} by Rewards ($MN)* 💰\n"
+            if top_rewards_users:
+                for i, user_data in enumerate(top_rewards_users):
+                    wallet_short = f"{user_data[0][:6]}...{user_data[0][-4:]}" if user_data[0] else "N/A"
+                    rewards_leaderboard += f"{i+1}. `{wallet_short}` - {user_data[1]:,} $MN\n"
+            else:
+                rewards_leaderboard += "_No users with rewards found._\n"
+            leaderboard_sections.append(rewards_leaderboard)
+
+            # --- Top 5 by Referral Count ---
+            logger.info(f"ChatID {chat_id}: Fetching top {limit} users by referral_count.")
+            cursor.execute("SELECT wallet, referral_count FROM users WHERE verified=1 ORDER BY referral_count DESC LIMIT ?", (limit,))
+            top_referral_users = cursor.fetchall()
+
+            referral_leaderboard = f"📣 *Top {limit} by Referrals* 📣\n"
+            if top_referral_users:
+                for i, user_data in enumerate(top_referral_users):
+                    wallet_short = f"{user_data[0][:6]}...{user_data[0][-4:]}" if user_data[0] else "N/A"
+                    referral_leaderboard += f"{i+1}. `{wallet_short}` - {user_data[1]} referrals\n"
+            else:
+                referral_leaderboard += "_No users with referrals found._\n"
+            leaderboard_sections.append(referral_leaderboard)
+
+            # Combine all sections
+            full_leaderboard_message = "\n\n".join(leaderboard_sections)
+            if not full_leaderboard_message.strip(): # Should not happen if sections always have headers
+                full_leaderboard_message = "Leaderboard data is currently unavailable."
+            
+            _safe_reply_to(message, full_leaderboard_message, parse_mode='Markdown')
+
+        except sqlite3.Error as e:
+            logger.error(f"ChatID {chat_id}: Database error during /leaderboard: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while fetching the leaderboard. Please try again.")
+        except Exception as e:
+            logger.error(f"ChatID {chat_id}: General error during /leaderboard: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred while fetching the leaderboard.")
+
 
 
 @bot.message_handler(commands=['verify'])
@@ -382,6 +450,56 @@ def claim_rewards(message):
         except Exception as e:
             logger.error(f"ChatID {chat_id}: General error during /claim for wallet {wallet}: {e}", exc_info=True)
             _safe_reply_to(message, "An unexpected error occurred while checking claims.")
+
+
+@bot.message_handler(commands=['leaderboard'])
+def show_leaderboard(message):
+    chat_id = message.chat.id
+    logger.info(f"ChatID {chat_id}: Received /leaderboard command.")
+
+    leaderboard_text_parts = ["🏆 MyNala Leaderboards 🏆\n"]
+
+    with db_lock:
+        try:
+            # --- Top 5 by Total Volume ---
+            leaderboard_text_parts.append("\n--- 🚀 Top 5 by Volume ($MN) ---")
+            cursor.execute("SELECT wallet, total_volume FROM users WHERE verified=1 ORDER BY total_volume DESC LIMIT 5")
+            top_volume_users = cursor.fetchall()
+            if top_volume_users:
+                for i, (wallet, volume) in enumerate(top_volume_users):
+                    leaderboard_text_parts.append(f"{i+1}. `{wallet[:6]}...{wallet[-4:]}` - {volume:,} $MN")
+            else:
+                leaderboard_text_parts.append("No users with volume yet.")
+
+            # --- Top 5 by Total Rewards ---
+            leaderboard_text_parts.append("\n--- 💰 Top 5 by Rewards ($MN) ---")
+            cursor.execute("SELECT wallet, total_rewards FROM users WHERE verified=1 ORDER BY total_rewards DESC LIMIT 5")
+            top_rewards_users = cursor.fetchall()
+            if top_rewards_users:
+                for i, (wallet, rewards) in enumerate(top_rewards_users):
+                    leaderboard_text_parts.append(f"{i+1}. `{wallet[:6]}...{wallet[-4:]}` - {rewards:,} $MN")
+            else:
+                leaderboard_text_parts.append("No users with rewards yet.")
+
+            # --- Top 5 by Referral Count ---
+            leaderboard_text_parts.append("\n--- 📣 Top 5 by Referrals ---")
+            cursor.execute("SELECT wallet, referral_count FROM users WHERE verified=1 ORDER BY referral_count DESC LIMIT 5")
+            top_referral_users = cursor.fetchall()
+            if top_referral_users:
+                for i, (wallet, referrals) in enumerate(top_referral_users):
+                    leaderboard_text_parts.append(f"{i+1}. `{wallet[:6]}...{wallet[-4:]}` - {referrals} referrals")
+            else:
+                leaderboard_text_parts.append("No users with referrals yet.")
+            
+            final_leaderboard_text = "\n".join(leaderboard_text_parts)
+            _safe_reply_to(message, final_leaderboard_text, parse_mode='Markdown')
+
+        except sqlite3.Error as e:
+            logger.error(f"ChatID {chat_id}: Database error during /leaderboard: {e}", exc_info=True)
+            _safe_reply_to(message, "An error occurred while fetching the leaderboards. Please try again.")
+        except Exception as e:
+            logger.error(f"ChatID {chat_id}: General error during /leaderboard: {e}", exc_info=True)
+            _safe_reply_to(message, "An unexpected error occurred while fetching the leaderboards.")
 
 
 @bot.message_handler(commands=['referrals'])
